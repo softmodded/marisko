@@ -10,7 +10,7 @@ named after the [marisko flower](https://en.wikipedia.org/wiki/Cypripedium_calce
 
 - bouncing light animation across the 4 playback leds
 - function button powers off device and returns it to the bootloader
-- watchdog fed
+- watchdog is fed preventing bootloops
 
 ## return to bootloader
 
