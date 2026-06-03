@@ -1,0 +1,6 @@
+board:
+  name: sp1
+  full_name: SP-1 Stem Player
+  vendor: teeneng
+  socs:
+  - name: nrf52840

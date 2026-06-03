@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: Apache-2.0
+
+config BOARD_SP1
+	bool "SP-1 Stem Player"
+	select SOC_NRF52840_QIAA

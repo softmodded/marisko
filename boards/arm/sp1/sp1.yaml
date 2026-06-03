@@ -1,0 +1,18 @@
+identifier: sp1
+name: SP-1-Stem-Player
+type: mcu
+arch: arm
+ram: 256
+flash: 1024
+toolchain:
+  - zephyr
+  - gnuarmemb
+supported:
+  - gpio
+  - watchdog
+  - i2c
+  - i2s
+  - pwm
+  - adc
+  - usb_device
+vendor: teeneng

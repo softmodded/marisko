@@ -1,0 +1,9 @@
+if BOARD_SP1
+
+config HW_STACK_PROTECTION
+	default y if ARCH_HAS_STACK_PROTECTION
+
+config ROM_START_OFFSET
+	default 0x20000
+
+endif

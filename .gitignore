@@ -1,0 +1,30 @@
+# Build output
+build/
+*.bin
+*.hex
+*.elf
+*.o
+*.a
+
+# Zephyr SDK
+zephyr-sdk-*/
+
+# West / nRF Connect SDK
+.west/
+zephyr/
+nrf/
+bootloader/
+modules/
+nrfxlib/
+tools/
+test/
+
+# Python
+__pycache__/
+*.pyc
+
+# Misc
+*.swp
+*.swo
+*~
+.DS_Store
