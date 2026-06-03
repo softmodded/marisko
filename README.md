@@ -2,7 +2,7 @@
 
 **custom firmware for the teenage engineering sp-1 stem player.**  
 
-named after the [marisko flower](https://en.wikipedia.org/wiki/Cypripedium_calceolus) (*cypripedium calceolus*), a rare orchid native to norway — fitting for custom firmware on an unreleased device.
+named after the [marisko flower](https://en.wikipedia.org/wiki/Cypripedium_calceolus)
 
 ## features
 
