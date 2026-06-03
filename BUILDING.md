@@ -21,9 +21,10 @@ west init -l nrf
 west update
 ```
 
-this pulls ~5-10 GB.
+this pulls ~5-10 GB and may take some time, so be patient.
 
 ## zephyr sdk (cross-compiler)
+`(version 0.17.0 is used because that's what i had installed at the time. maybe someone should update that?)`
 
 ```
 wget https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.0/zephyr-sdk-0.17.0_linux-x86_64.tar.zst
@@ -55,7 +56,7 @@ mv zephyr-sdk-0.17.0/sysroots/x86_64-pokysdk-linux/usr/bin/dtc zephyr-sdk-0.17.0
 ln -s /usr/bin/dtc zephyr-sdk-0.17.0/sysroots/x86_64-pokysdk-linux/usr/bin/dtc
 ```
 
-if `gcc-12` is missing:
+if `gcc-12` is missing: 
 
 ```
 mkdir -p ~/.local/bin && ln -s /usr/bin/gcc ~/.local/bin/gcc-12
@@ -98,4 +99,4 @@ dd if=/tmp/full.bin of=build/sp1_firmware.bin bs=1 skip=131072
 
 - `app/` - firmware source (`main.c`, cmake, kconfig)
 - `boards/arm/sp1/` - custom zephyr board definition for the sp-1
-- `build/` - build output (gitignored)
+- `build/` - build output (ignored)
