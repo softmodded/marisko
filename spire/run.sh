@@ -47,10 +47,9 @@ if ! command -v renode &>/dev/null; then
 fi
 
 # Start Renode, load platform, load firmware, start emulation
-renode --console -e "
+renode --console --port 3334 -e "
 include @$DIR/sp1.repl
 sysbus LoadELF @$FIRMWARE
-showAnalyzer uart0
 start
 " &
 RENODE_PID=$!
