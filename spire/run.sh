@@ -46,22 +46,35 @@ if ! command -v renode &>/dev/null; then
     exit 1
 fi
 
-# Start Renode, load platform, load firmware, start emulation
 renode --console --port 3334 -e "
 include @$DIR/sp1.repl
 sysbus LoadELF @$FIRMWARE
 sysbus.cpu VectorTableOffset 0x20000
-sysbus WriteDoubleWord 0x1000120C 0xFFFFFFFE
+
+# Pre-configure LFCLK as already running from SYNTH (matching real bootloader)
+sysbus WriteDoubleWord 0x40000518 0x2
+sysbus WriteDoubleWord 0x40000008 0x1
+sysbus WriteDoubleWord 0x40000418 0x1
+sysbus WriteDoubleWord 0x40000414 0x1
+sysbus WriteDoubleWord 0x4000041C 0x2
+sysbus WriteDoubleWord 0x40000104 0x1
+
 macro reset
 \"\"\"
     sysbus LoadELF @$FIRMWARE
     sysbus.cpu VectorTableOffset 0x20000
-    sysbus WriteDoubleWord 0x1000120C 0xFFFFFFFE
+    sysbus WriteDoubleWord 0x40000518 0x2
+    sysbus WriteDoubleWord 0x40000008 0x1
+    sysbus WriteDoubleWord 0x40000418 0x1
+    sysbus WriteDoubleWord 0x40000414 0x1
+    sysbus WriteDoubleWord 0x4000041C 0x2
+    sysbus WriteDoubleWord 0x40000104 0x1
 \"\"\"
+
 start
 " &
 RENODE_PID=$!
-sleep 2
+sleep 3
 
 echo "[spire] starting virtual device gui..."
 python3 "$DIR/peripherals/sp1_gui.py" &
