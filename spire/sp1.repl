@@ -1,23 +1,38 @@
 using "platforms/cpus/nrf52840.repl"
 
-sp1_playback_leds: GPIOPort.LEDs @ gpioPortB 0x50000000
-    0 -> led_playback_2@0 { gpio: gpio0 }
-    1 -> led_playback_4@1 { gpio: gpio0 }
-    12 -> led_playback_3@12 { gpio: gpio1 }
-    13 -> led_playback_1@13 { gpio: gpio1 }
+# Playback LEDs (between PLAY and FUNCTION buttons)
+# P1.13, P0.00, P1.12, P0.01 — active HIGH
 
-sp1_track_leds: GPIOPort.LEDs @ gpioPortC 0x50000000
-    29 -> led_track_1@29 { gpio: gpio0 }
-    26 -> led_track_2@26 { gpio: gpio0 }
-    15 -> led_track_3@15 { gpio: gpio1 }
-    14 -> led_track_4@14 { gpio: gpio1 }
+gpio1:
+    13 -> led_pb1@0
+    12 -> led_pb3@0
 
-sp1_fn_button: GPIOPort.Buttons @ gpioPortD 0x50000000
-    27 -> btn_function@27 { gpio: gpio0 }
+gpio0:
+    0 -> led_pb2@0
+    1 -> led_pb4@0
 
-i2c0: I2C.NRF52840 @ sysbus 0x40003000
-    0x18: I2C.StubPeripheral @ sysbus 0x40003000
-    0x48: I2C.StubPeripheral @ sysbus 0x40003000
+led_pb1: Miscellaneous.LED @ gpio1 13
+led_pb2: Miscellaneous.LED @ gpio0 0
+led_pb3: Miscellaneous.LED @ gpio1 12
+led_pb4: Miscellaneous.LED @ gpio0 1
 
-sp1_eMMC: Memory.MappedMemory @ sysbus 0xA0000000
-    size: 0x100000000
+# Track LEDs (above the 4 track buttons)
+# P0.29, P0.26, P1.15, P1.14 — active HIGH
+
+gpio1:
+    15 -> led_t3@0
+    14 -> led_t4@0
+
+gpio0:
+    29 -> led_t1@0
+    26 -> led_t2@0
+
+led_t1: Miscellaneous.LED @ gpio0 29
+led_t2: Miscellaneous.LED @ gpio0 26
+led_t3: Miscellaneous.LED @ gpio1 15
+led_t4: Miscellaneous.LED @ gpio1 14
+
+# Function button (P0.27) — active LOW with pull-up
+btn_function: Miscellaneous.Button @ gpio0 27
+    invert: true
+    -> gpio0@27

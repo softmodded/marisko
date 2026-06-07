@@ -50,9 +50,7 @@ fi
 renode --console -e "
 include @$DIR/sp1.repl
 sysbus LoadELF @$FIRMWARE
-showAnalyzer gpioPortB
-showAnalyzer gpioPortC
-showAnalyzer gpioPortD
+showAnalyzer uart0
 start
 " &
 RENODE_PID=$!
