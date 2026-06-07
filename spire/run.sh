@@ -50,6 +50,7 @@ fi
 renode --console --port 3334 -e "
 include @$DIR/sp1.repl
 sysbus LoadELF @$FIRMWARE
+sysbus.cpu VectorTableOffset 0x20000
 start
 " &
 RENODE_PID=$!
