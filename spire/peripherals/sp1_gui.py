@@ -12,9 +12,9 @@ import tkinter as tk
 RENODE_HOST = "127.0.0.1"
 RENODE_PORT = 3334
 
-# GPIO state mirrored to these RAM addresses by firmware (emulator I/O)
-LED_P1_ADDR = 0x2000FFF0
-LED_P0_ADDR = 0x2000FFF4
+# GPIO state mirrored to this RAM address by firmware (emulator I/O)
+# Packed: bits 0-15 = P0, bits 16-31 = P1
+LED_MIRROR_ADDR = 0x2000FFF0
 
 
 class RenodeClient:
@@ -196,23 +196,24 @@ class SP1GUI:
 
     def _start_polling(self):
         self.led_map = {
-            "p1": (LED_P1_ADDR, 13),
-            "p2": (LED_P0_ADDR, 0),
-            "p3": (LED_P1_ADDR, 12),
-            "p4": (LED_P0_ADDR, 1),
-            "t1": (LED_P0_ADDR, 29),
-            "t2": (LED_P0_ADDR, 26),
-            "t3": (LED_P1_ADDR, 15),
-            "t4": (LED_P1_ADDR, 14),
+            "p1": (1, 13),   # P1 bit 13 (in upper 16 bits)
+            "p2": (0, 0),    # P0 bit 0  (in lower 16 bits)
+            "p3": (1, 12),   # P1 bit 12
+            "p4": (0, 1),    # P0 bit 1
+            "t1": (0, 29),   # P0 bit 29
+            "t2": (0, 26),   # P0 bit 26
+            "t3": (1, 15),   # P1 bit 15
+            "t4": (1, 14),   # P1 bit 14
         }
 
         def poll():
             try:
-                out0 = self.renode.read32(LED_P0_ADDR)
-                out1 = self.renode.read32(LED_P1_ADDR)
-                print(f"[spire-gui] P0=0x{out0:08X} P1=0x{out1:08X}", flush=True)
-                for name, (base, pin) in self.led_map.items():
-                    val = out1 if base == LED_P1_ADDR else out0
+                packed = self.renode.read32(LED_MIRROR_ADDR)
+                out0 = packed & 0xFFFF
+                out1 = (packed >> 16) & 0xFFFF
+                print(f"[spire-gui] P0=0x{out0:04X} P1=0x{out1:04X}", flush=True)
+                for name, (port, pin) in self.led_map.items():
+                    val = out1 if port == 1 else out0
                     color = self.RED if (val >> pin) & 1 else "#333"
                     if name in self.led_widgets and name in self._led_canvases:
                         self._led_canvases[name].itemconfigure(
