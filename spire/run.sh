@@ -1,12 +1,11 @@
 #!/bin/bash
 # spire — SP-1 Emulator launcher
-# Builds firmware, starts Renode with the SP-1 platform and virtual GUI
+# Usage: ./run.sh [path/to/firmware.elf]
+# If no argument given, tries ../build/app/zephyr/zephyr.elf
 
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$DIR")"
-FIRMWARE="$PROJECT_DIR/build/app/zephyr/zephyr.elf"
 
 cleanup() {
     echo ""
@@ -17,23 +16,14 @@ cleanup() {
 }
 trap cleanup INT TERM
 
-if [ -z "$ZEPHYR_SDK_INSTALL_DIR" ]; then
-    ZEPHYR_SDK_INSTALL_DIR="$(dirname "$PROJECT_DIR")/zephyr-sdk-0.17.0"
-    if [ ! -d "$ZEPHYR_SDK_INSTALL_DIR" ]; then
-        echo "[spire] ZEPHYR_SDK_INSTALL_DIR not set and default path not found" >&2
-        echo "[spire] set it: export ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk-0.17.0" >&2
-        exit 1
-    fi
+FIRMWARE="$1"
+if [ -z "$FIRMWARE" ]; then
+    FIRMWARE="$(dirname "$DIR")/build/app/zephyr/zephyr.elf"
 fi
 
-echo "[spire] building firmware..."
-cd "$PROJECT_DIR"
-west build -b sp1 -d build app -- \
-  -DBOARD_ROOT="$PROJECT_DIR" \
-  -DZEPHYR_SDK_INSTALL_DIR="$ZEPHYR_SDK_INSTALL_DIR"
-
 if [ ! -f "$FIRMWARE" ]; then
-    echo "[spire] build failed — no $FIRMWARE" >&2
+    echo "[spire] firmware not found: $FIRMWARE" >&2
+    echo "[spire] usage: $0 [path/to/firmware.elf]" >&2
     exit 1
 fi
 
@@ -55,7 +45,6 @@ include @$DIR/sp1.repl
 sysbus LoadELF @$FIRMWARE
 sysbus.cpu VectorTableOffset 0x20000
 
-# Pre-configure LFCLK as already running from SYNTH (matching real bootloader)
 sysbus WriteDoubleWord 0x40000518 0x2
 sysbus WriteDoubleWord 0x40000008 0x1
 sysbus WriteDoubleWord 0x40000418 0x1

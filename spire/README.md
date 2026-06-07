@@ -1,36 +1,26 @@
 # spire
 
-**sp-1 emulator for renode.** named after the norwegian word for sprout — because this is where firmware grows safely before it goes to real hardware.
+**sp-1 emulator for renode** 
 
 ## what it does
 
-- emulates the sp-1's nrf52840, leds, buttons, i2c bus, i2s audio, and adc
+- emulates the sp-1's nrf52840, leds, buttons
 - shows a virtual device window with clickable buttons and live led feedback
-- visualizes audio output as a waveform
-- can record i2s audio to a .wav file
-- connect gdb for proper debugging — breakpoints, step-through, the works
+- can be used for easier debugging custom firmware
 
 ## install
 
 ### renode
 
 ```bash
-# arch
-yay -S renode-bin
-
-# macOS
-brew install renode
-
-# linux (manual)
-wget https://github.com/renode/renode/releases/latest/download/renode-*.linux-portable.tar.gz
-tar xf renode-*.tar.gz
-export PATH="$PATH:$(pwd)/renode_*/"
+# i use arch so this is a guide for arch-based 
+yay -S renode-bin # or your favorite aur helper
 ```
 
 ### python deps
 
 ```bash
-pip3 install tkinter  # usually bundled with python
+pip3 install tkinter
 ```
 
 ## usage
@@ -50,31 +40,6 @@ in the renode console:
 
 ```
 include @sp1.resc firmware=../build/app/zephyr/zephyr.elf
-```
-
-### with gdb debugging
-
-terminal 1 — start renode with gdb server:
-
-```
-renode --console -e "using sysbus; machine LoadPlatformDescription @sp1.repl; machine StartGdbServer 3333"
-```
-
-terminal 2 — connect and debug:
-
-```
-arm-zephyr-eabi-gdb ../build/app/zephyr/zephyr.elf
-(gdb) target remote :3333
-(gdb) break main
-(gdb) continue
-```
-
-### record audio output
-
-the gui window has an audio waveform display. to record to a .wav file, add this to the renode console before starting:
-
-```
-python "import sp1_gui; sp1_gui.record_audio('output.wav')"
 ```
 
 ## virtual device
