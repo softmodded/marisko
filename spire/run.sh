@@ -81,20 +81,6 @@ start
 
 showAnalyzer sysbus.gpio0
 showAnalyzer sysbus.gpio1
-
-# Wait for firmware to start, then verify GPIO writes are happening
-sleep 5
-echo "=== RAM mirror check ==="
-echo "P0_OUT mirror (0x2000FFF0):"
-sysbus ReadDoubleWord 0x2000FFF0
-echo "P1_OUT mirror (0x2000FFF4):"
-sysbus ReadDoubleWord 0x2000FFF4
-echo "=== direct GPIO reads ==="
-echo "P0 OUT (0x50000504):"
-sysbus ReadDoubleWord 0x50000504
-echo "P1 OUT (0x50000804):"
-sysbus ReadDoubleWord 0x50000804
-echo "=== end check ==="
 " &
 RENODE_PID=$!
 sleep 3
