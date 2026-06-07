@@ -97,6 +97,11 @@ dd if=/tmp/full.bin of=build/sp1_firmware.bin bs=1 skip=131072
 
 ## project structure
 
-- `app/` - firmware source (`main.c`, cmake, kconfig)
-- `boards/arm/sp1/` - custom zephyr board definition for the sp-1
-- `build/` - build output (ignored)
+- `app/` — firmware source (`main.c`, cmake, kconfig)
+- `boards/arm/sp1/` — custom zephyr board definition for the sp-1
+- `build/` — build output (ignored)
+- `spire/` — renode emulator for the sp-1
+
+## emulator
+
+see **[spire](spire/README.md)** for the renode-based sp-1 hardware emulator. test firmware with virtual buttons, leds, audio visualization, and gdb debugging — no risk of bricking a real device.
