@@ -46,7 +46,7 @@ if ! command -v renode &>/dev/null; then
     exit 1
 fi
 
-renode --console --port 3334 -e "
+renode --port 3334 -e "
 include @$DIR/sp1.repl
 sysbus LoadELF @$FIRMWARE
 sysbus.cpu VectorTableOffset 0x20000
