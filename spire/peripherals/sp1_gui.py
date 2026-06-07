@@ -12,9 +12,9 @@ import tkinter as tk
 RENODE_HOST = "127.0.0.1"
 RENODE_PORT = 3334
 
-# Mirror addresses maintained by gpio_mirror.py hook
-MIRROR_P0 = 0x4001F000
-MIRROR_P1 = 0x4001F004
+# GPIO state mirrored to these RAM addresses by firmware (emulator I/O)
+LED_P0_ADDR = 0x2000FFF0
+LED_P1_ADDR = 0x2000FFF4
 
 
 class RenodeClient:
@@ -195,22 +195,22 @@ class SP1GUI:
 
     def _start_polling(self):
         self.led_map = {
-            "p1": (MIRROR_P1, 13),
-            "p2": (MIRROR_P0, 0),
-            "p3": (MIRROR_P1, 12),
-            "p4": (MIRROR_P0, 1),
-            "t1": (MIRROR_P0, 29),
-            "t2": (MIRROR_P0, 26),
-            "t3": (MIRROR_P1, 15),
-            "t4": (MIRROR_P1, 14),
+            "p1": (LED_P1_ADDR, 13),
+            "p2": (LED_P0_ADDR, 0),
+            "p3": (LED_P1_ADDR, 12),
+            "p4": (LED_P0_ADDR, 1),
+            "t1": (LED_P0_ADDR, 29),
+            "t2": (LED_P0_ADDR, 26),
+            "t3": (LED_P1_ADDR, 15),
+            "t4": (LED_P1_ADDR, 14),
         }
 
         def poll():
             try:
-                out0 = self.renode.read32(MIRROR_P0)
-                out1 = self.renode.read32(MIRROR_P1)
+                out0 = self.renode.read32(LED_P0_ADDR)
+                out1 = self.renode.read32(LED_P1_ADDR)
                 for name, (base, pin) in self.led_map.items():
-                    val = out1 if base == MIRROR_P1 else out0
+                    val = out1 if base == LED_P1_ADDR else out0
                     color = self.RED if (val >> pin) & 1 else "#333"
                     if name in self.led_widgets:
                         self.led_widgets[name].itemconfigure(

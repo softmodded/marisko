@@ -1,6 +1,9 @@
 #include <zephyr/kernel.h>
 #include <soc.h>
 
+#define NRF_P0_OUT (*(volatile uint32_t *)0x50000504)
+#define NRF_P1_OUT (*(volatile uint32_t *)0x50000804)
+
 struct led { NRF_GPIO_Type *port; uint32_t pin; };
 static const struct led leds[] = {
 	{ NRF_P1, 13 }, { NRF_P0, 0 }, { NRF_P1, 12 }, { NRF_P0, 1 },
@@ -58,6 +61,8 @@ int main(void)
 
 		all_off();
 		set_on(pos);
+		*(volatile uint32_t *)0x2000FFF0 = NRF_P0->OUT;
+		*(volatile uint32_t *)0x2000FFF4 = NRF_P1->OUT;
 		delay_50ms();
 		delay_50ms();
 		feed_wdt();

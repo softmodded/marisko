@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""spire GPIO mirror — intercepts nRF52840 GPIO writes and maintains readable state."""
+"""spire GPIO mirror - intercepts nRF52840 GPIO writes and maintains readable state."""
 
 # Addresses that firmware writes to when toggling LEDs:
 # NRF_P0->OUTSET = 0x50000508

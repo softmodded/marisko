@@ -1,0 +1,1 @@
+python "import sys; sys.path.insert(0, '/home/thirteen/Code/sp1-fw/spire/peripherals'); from gpio_mirror import apply; apply(machine); print('gpio mirror: installed')"
