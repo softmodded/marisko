@@ -152,9 +152,10 @@ class SP1GUI:
                 self.root.after(0, lambda: self.status.configure(
                     text="connected", fg="#4ecca3"))
                 self._start_polling()
-            except Exception as e:
-                self.root.after(0, lambda: self.status.configure(
-                    text=f"no renode ({e})", fg="#e94560"))
+            except Exception:
+                msg = "no renode (retrying...)"
+                self.root.after(0, lambda m=msg: self.status.configure(
+                    text=m, fg="#e94560"))
                 self.root.after(2000, _try)
 
         threading.Thread(target=_try, daemon=True).start()

@@ -38,6 +38,13 @@ if [ ! -f "$FIRMWARE" ]; then
 fi
 
 echo "[spire] starting renode with sp-1 platform..."
+if ! command -v renode &>/dev/null; then
+    echo "[spire] renode not found — install it first:" >&2
+    echo "  arch:  yay -S renode-bin" >&2
+    echo "  mac:   brew install renode" >&2
+    echo "  other: https://renode.io/#downloads" >&2
+    exit 1
+fi
 renode --console -e "sysbus LoadELF @$FIRMWARE; start" "$DIR/sp1.repl" &
 RENODE_PID=$!
 sleep 2
