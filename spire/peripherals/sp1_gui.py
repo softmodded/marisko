@@ -42,15 +42,10 @@ class RenodeClient:
     def read32(self, addr):
         resp = self.cmd(f"sysbus ReadDoubleWord {hex(addr)}")
         try:
-            parts = resp.strip().split()
-            for p in parts:
-                clean = p.strip().rstrip('.')
-                if clean.startswith("0x") or clean.startswith("-0x"):
-                    return int(clean, 16)
-                try:
-                    return int(clean)
-                except ValueError:
-                    continue
+            for line in resp.split('\n'):
+                line = line.strip()
+                if line.startswith('0x') or line.startswith('-0x'):
+                    return int(line, 16)
         except:
             pass
         return 0
@@ -63,7 +58,7 @@ class RenodeClient:
                 if not chunk:
                     break
                 data += chunk
-                if b"\n" in chunk or b"(machine-0)" in chunk:
+                if b"(machine-0)" in data or b"(monitor)" in data:
                     break
             except socket.timeout:
                 break
