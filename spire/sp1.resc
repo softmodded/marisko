@@ -1,0 +1,25 @@
+# spire — SP-1 Emulator Renode script
+# Load this in Renode to start the emulation with firmware
+
+$firmware?="build/app/zephyr/zephyr.elf"
+
+sysbus LoadELF @$firmware
+
+showAnalyzer gpioPortB
+showAnalyzer gpioPortC
+showAnalyzer gpioPortD
+showAnalyzer gpioPortE
+
+echo " "
+echo "  spire emulator running"
+echo "  ====================="
+echo "  LEDs:     gpioPortB (playback) and gpioPortC (track)"
+echo "  Buttons:  gpioPortD (function) and gpioPortE (ladder)"
+echo "  "
+echo "  Press buttons in the virtual GUI or use:"
+echo "    gpioPortD PressButton function"
+echo "  "
+echo "  Start emulation with: start"
+echo " "
+
+start
