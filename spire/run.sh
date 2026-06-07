@@ -59,6 +59,8 @@ sysbus WriteDoubleWord 0x40000414 0x1
 sysbus WriteDoubleWord 0x4000041C 0x2
 sysbus WriteDoubleWord 0x40000104 0x1
 
+sysbus.cpu PerformanceMode true
+
 macro reset
 \"\"\"
     sysbus LoadELF @$FIRMWARE
