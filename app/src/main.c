@@ -113,7 +113,8 @@ int main(void)
 		all_pb_off();
 		if (!pressed) set_pb_on(pos);
 
-		*(volatile uint32_t *)0x2000FFF0 = (NRF_P0->OUT & 0xFFFF) | ((NRF_P1->OUT & 0xFFFF) << 16);
+		*(volatile uint32_t *)0x2000FFF0 = NRF_P0->OUT;
+		*(volatile uint32_t *)0x2000FFF4 = NRF_P1->OUT;
 		delay_50ms();
 		delay_50ms();
 		feed_wdt();
