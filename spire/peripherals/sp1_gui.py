@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 spire — SP-1 Emulator GUI
-Virtual device with clickable buttons and live LED visualization.
+Virtual device modeled after the physical SP-1 hardware.
 Connects to Renode via its monitor socket.
 """
 
@@ -12,8 +12,6 @@ import tkinter as tk
 RENODE_HOST = "127.0.0.1"
 RENODE_PORT = 3334
 
-# GPIO state mirrored to this RAM address by firmware (emulator I/O)
-# Packed: bits 0-15 = P0, bits 16-31 = P1
 LED_MIRROR_ADDR = 0x2000FFF0
 
 
@@ -35,9 +33,31 @@ class RenodeClient:
         with self.lock:
             try:
                 self.sock.sendall((command + "\n").encode())
-                return self._recv()
+                return self._recv_result()
             except Exception:
                 return ""
+
+    def _recv_result(self):
+        data = b""
+        while True:
+            try:
+                chunk = self.sock.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                if b"(machine-0)" in data or b"(monitor)" in data:
+                    break
+            except socket.timeout:
+                if data:
+                    break
+                return ""
+        text = data.decode(errors="replace").strip()
+        lines = text.split('\n')
+        for line in reversed(lines):
+            line = line.strip()
+            if line.startswith('0x') or line.startswith('-0x'):
+                return line
+        return text
 
     def read32(self, addr):
         resp = self.cmd(f"sysbus ReadDoubleWord {hex(addr)}")
@@ -66,118 +86,122 @@ class RenodeClient:
 
 
 class SP1GUI:
-    BG = "#1a1a2e"
-    FG = "#ccc"
-    RED = "#e94560"
-    DIM = "#555"
+    SILVER = "#c0c0c0"
+    DARK  = "#2a2a2a"
+    BG    = "#1a1a1a"
+    RED   = "#ffffff"
+    DIM   = "#888888"
+    OFF   = "#444444"
 
     def __init__(self):
         self.root = tk.Tk()
         self.root.title("spire — SP-1 Emulator")
-        self.root.geometry("460x520")
+        self.root.geometry("520x680")
         self.root.configure(bg=self.BG)
         self.root.resizable(False, False)
 
         self.renode = None
         self.led_widgets = {}
-        self.led_map = {}
+        self._led_canvases = {}
         self._setup_ui()
         self._connect_renode()
 
-    def led_canvases(self, name):
-        return self._led_canvases[name]
-
     def _setup_ui(self):
-        self._led_canvases = {}
-        tk.Label(self.root, text="spire", font=("Helvetica", 18, "bold"),
-                 fg=self.RED, bg=self.BG).pack(pady=(12, 2))
-        tk.Label(self.root, text="sp-1 stem player emulator",
-                 font=("Helvetica", 8), fg="#888", bg=self.BG).pack(pady=(0, 12))
+        # --- Body ---
+        body = tk.Canvas(self.root, width=400, height=620, bg=self.SILVER,
+                         highlightthickness=0, bd=0)
+        body.place(x=60, y=30)
+        body.create_rectangle(2, 2, 398, 618, outline="#999", width=2)
 
-        self._make_section("track leds")
-        tframe = tk.Frame(self.root, bg=self.BG)
-        tframe.pack(pady=(0, 14))
-        for name in ["t1", "t2", "t3", "t4"]:
-            c = tk.Canvas(tframe, width=28, height=28, bg=self.BG, highlightthickness=0)
-            c.pack(side=tk.LEFT, padx=14)
-            self.led_widgets[name] = c.create_oval(4, 4, 24, 24, fill="#333", outline=self.DIM)
-            self._led_canvases[name] = c
-            tk.Label(tframe, text=name, font=("Helvetica", 7), fg="#666", bg=self.BG).pack(side=tk.LEFT, padx=(0, 8))
+        # Title
+        tk.Label(self.root, text="sp-1", font=("Helvetica", 8),
+                 fg="#666", bg=self.SILVER).place(x=240, y=38)
 
-        self._make_section("track buttons (ladder on ain0/p0.02)")
-        tbframe = tk.Frame(self.root, bg=self.BG)
-        tbframe.pack(pady=(0, 12))
+        # --- Sliders (center vertical line of 4 faders) ---
+        slider_y = [130, 230, 330, 430]
+        self.slider_canvases = []
+        for i, y in enumerate(slider_y):
+            c = tk.Canvas(self.root, width=30, height=80, bg=self.SILVER,
+                          highlightthickness=0)
+            c.place(x=190, y=y)
+            c.create_rectangle(10, 5, 22, 75, fill=self.DARK, outline="#999", width=1)
+            knob_y = 40 + (i - 1.5) * 15
+            c.create_rectangle(8, knob_y, 24, knob_y + 12, fill="#666",
+                               outline="#888", width=1)
+            self.slider_canvases.append(c)
+
+        # --- Track buttons (under each slider) ---
+        track_names = ["1", "2", "3", "4"]
         self.track_btns = {}
-        for name in ["trk1", "trk2", "trk3", "trk4"]:
-            btn = tk.Button(tbframe, text=name, font=("Helvetica", 9, "bold"),
-                            width=6, height=2, bg="#16213e", fg=self.FG,
-                            activebackground=self.RED, activeforeground="#fff",
-                            relief=tk.FLAT, bd=1)
-            btn.pack(side=tk.LEFT, padx=4)
-            self.track_btns[name] = btn
+        for i, y in enumerate(slider_y):
+            btn = tk.Button(self.root, text=track_names[i],
+                            font=("Helvetica", 9, "bold"), width=2, height=3,
+                            bg=self.DARK, fg=self.SILVER, relief=tk.FLAT,
+                            activebackground="#555", activeforeground="#fff")
+            btn.place(x=290, y=y + 20)
 
-        self._make_section("play button (ladder on ain0/p0.02)")
-        pframe = tk.Frame(self.root, bg=self.BG)
-        pframe.pack(pady=(0, 12))
-        self.play_btn = tk.Button(pframe, text="PLAY", font=("Helvetica", 11, "bold"),
-                                  width=14, height=2, bg="#0f3460", fg=self.FG,
-                                  activebackground=self.RED, activeforeground="#fff",
-                                  relief=tk.FLAT, bd=1)
-        self.play_btn.pack()
+        # --- Right face: Play button + LEDs + Function button ---
+        # Play button
+        play_btn = tk.Button(self.root, text="PLAY", font=("Helvetica", 8, "bold"),
+                             width=4, height=3, bg=self.DARK, fg=self.SILVER,
+                             relief=tk.FLAT, activebackground="#555", activeforeground="#fff")
+        play_btn.place(x=490, y=120)
 
-        self._make_section("playback leds")
-        lframe = tk.Frame(self.root, bg=self.BG)
-        lframe.pack(pady=(0, 12))
-        for name in ["p1", "p2", "p3", "p4"]:
-            c = tk.Canvas(lframe, width=28, height=28, bg=self.BG, highlightthickness=0)
-            c.pack(side=tk.LEFT, padx=14)
-            self.led_widgets[name] = c.create_oval(4, 4, 24, 24, fill="#333", outline=self.DIM)
+        # Playback LEDs between Play and Function
+        led_names = ["p1", "p2", "p3", "p4"]
+        for i, name in enumerate(led_names):
+            c = tk.Canvas(self.root, width=18, height=18, bg=self.BG,
+                          highlightthickness=0)
+            c.place(x=496, y=210 + i * 50)
+            self.led_widgets[name] = c.create_oval(2, 2, 16, 16, fill=self.OFF,
+                                                    outline="#555")
             self._led_canvases[name] = c
-            tk.Label(lframe, text=name, font=("Helvetica", 7), fg="#666", bg=self.BG).pack(side=tk.LEFT, padx=(0, 8))
 
-        self._make_section("function button (p0.27)")
-        fframe = tk.Frame(self.root, bg=self.BG)
-        fframe.pack(pady=(0, 12))
-        self.fn_btn = tk.Button(fframe, text="\u2022\u2022", font=("Helvetica", 14, "bold"),
-                                width=4, height=1, bg="#0f3460", fg=self.FG,
-                                activebackground=self.RED, activeforeground="#fff",
-                                relief=tk.FLAT, bd=1)
-        self.fn_btn.pack()
+        # Function button
+        fn_btn = tk.Button(self.root, text="••", font=("Helvetica", 11, "bold"),
+                           width=4, height=2, bg=self.DARK, fg=self.SILVER,
+                           relief=tk.FLAT, activebackground="#555", activeforeground="#fff")
+        fn_btn.place(x=490, y=450)
 
-        self._make_section("rocker + transport (ladder on ain1/p0.03)")
-        rframe = tk.Frame(self.root, bg=self.BG)
-        rframe.pack(pady=(0, 10))
-        volframe = tk.Frame(rframe, bg=self.BG)
-        volframe.pack(side=tk.LEFT, padx=20)
-        tk.Label(volframe, text="vol", font=("Helvetica", 7), fg="#666", bg=self.BG).pack()
-        vol_up = tk.Button(volframe, text="+", font=("Helvetica", 9, "bold"),
-                           width=3, height=1, bg="#16213e", fg=self.FG,
-                           activebackground=self.RED, relief=tk.FLAT, bd=1)
-        vol_up.pack()
-        vol_dn = tk.Button(volframe, text="-", font=("Helvetica", 9, "bold"),
-                           width=3, height=1, bg="#16213e", fg=self.FG,
-                           activebackground=self.RED, relief=tk.FLAT, bd=1)
-        vol_dn.pack()
-        tk.Frame(rframe, width=1, height=50, bg=self.DIM).pack(side=tk.LEFT, padx=16)
-        navframe = tk.Frame(rframe, bg=self.BG)
-        navframe.pack(side=tk.LEFT, padx=20)
-        tk.Label(navframe, text="nav", font=("Helvetica", 7), fg="#666", bg=self.BG).pack()
-        self.fwd_btn = tk.Button(navframe, text="\u25c0\u25c0", font=("Helvetica", 9, "bold"),
-                                 width=4, height=1, bg="#16213e", fg=self.FG,
-                                 activebackground=self.RED, relief=tk.FLAT, bd=1)
-        self.fwd_btn.pack()
-        self.rev_btn = tk.Button(navframe, text="\u25b6\u25b6", font=("Helvetica", 9, "bold"),
-                                 width=4, height=1, bg="#16213e", fg=self.FG,
-                                 activebackground=self.RED, relief=tk.FLAT, bd=1)
-        self.rev_btn.pack()
+        # --- Top face buttons ---
+        # Volume circles (left side of top)
+        self._make_top_button(140, 42, "+")   # vol up
+        self._make_top_button(140, 78, "−")   # vol down
 
+        # Rocker (beside volume)
+        rocker_frame = tk.Frame(self.root, bg=self.SILVER)
+        rocker_frame.place(x=200, y=45)
+        btn_prev = tk.Button(rocker_frame, text="◀◀", font=("Helvetica", 7),
+                             width=3, height=1, bg=self.DARK, fg=self.SILVER,
+                             relief=tk.FLAT)
+        btn_prev.pack()
+        btn_next = tk.Button(rocker_frame, text="▶▶", font=("Helvetica", 7),
+                             width=3, height=1, bg=self.DARK, fg=self.SILVER,
+                             relief=tk.FLAT)
+        btn_next.pack()
+
+        # --- Track LEDs (small indicators near sliders) ---
+        track_led_names = ["t1", "t2", "t3", "t4"]
+        for i, y in enumerate(slider_y):
+            c = tk.Canvas(self.root, width=12, height=12, bg=self.SILVER,
+                          highlightthickness=0)
+            c.place(x=310, y=y + 35)
+            self.led_widgets[track_led_names[i]] = c.create_oval(
+                1, 1, 11, 11, fill=self.OFF, outline="#999")
+            self._led_canvases[track_led_names[i]] = c
+
+        # --- Status bar ---
         self.status = tk.Label(self.root, text="connecting...", font=("Helvetica", 8),
                                 fg="#666", bg=self.BG)
-        self.status.pack(pady=(10, 4))
+        self.status.place(x=20, y=660)
 
-    def _make_section(self, text):
-        tk.Label(self.root, text=text.upper(), font=("Helvetica", 7, "bold"),
-                 fg=self.DIM, bg=self.BG).pack(pady=(0, 2))
+    def _make_top_button(self, x, y, text):
+        c = tk.Canvas(self.root, width=22, height=22, bg=self.DARK,
+                      highlightthickness=0)
+        c.place(x=x, y=y)
+        c.create_oval(2, 2, 20, 20, fill=self.DARK, outline="#555", width=1)
+        tk.Label(self.root, text=text, font=("Helvetica", 8, "bold"),
+                 fg=self.SILVER, bg=self.DARK).place(x=x + 6, y=y + 2)
 
     def _connect_renode(self):
         def _try():
@@ -190,20 +214,20 @@ class SP1GUI:
                 self._start_polling()
             except Exception:
                 msg = "no renode (retrying...)"
-                self.root.after(0, lambda m=msg: self.status.configure(text=m, fg=self.RED))
+                self.root.after(0, lambda m=msg: self.status.configure(text=m, fg="#e94560"))
                 self.root.after(2000, _try)
         threading.Thread(target=_try, daemon=True).start()
 
     def _start_polling(self):
         self.led_map = {
-            "p1": (1, 13),   # P1 bit 13 (in upper 16 bits)
-            "p2": (0, 0),    # P0 bit 0  (in lower 16 bits)
-            "p3": (1, 12),   # P1 bit 12
-            "p4": (0, 1),    # P0 bit 1
-            "t1": (0, 29),   # P0 bit 29
-            "t2": (0, 26),   # P0 bit 26
-            "t3": (1, 15),   # P1 bit 15
-            "t4": (1, 14),   # P1 bit 14
+            "p1": (1, 13),
+            "p2": (0, 0),
+            "p3": (1, 12),
+            "p4": (0, 1),
+            "t1": (0, 29),
+            "t2": (0, 26),
+            "t3": (1, 15),
+            "t4": (1, 14),
         }
 
         def poll():
@@ -211,10 +235,9 @@ class SP1GUI:
                 packed = self.renode.read32(LED_MIRROR_ADDR)
                 out0 = packed & 0xFFFF
                 out1 = (packed >> 16) & 0xFFFF
-                print(f"[spire-gui] P0=0x{out0:04X} P1=0x{out1:04X}", flush=True)
                 for name, (port, pin) in self.led_map.items():
                     val = out1 if port == 1 else out0
-                    color = self.RED if (val >> pin) & 1 else "#333"
+                    color = self.RED if (val >> pin) & 1 else self.OFF
                     if name in self.led_widgets and name in self._led_canvases:
                         self._led_canvases[name].itemconfigure(
                             self.led_widgets[name], fill=color)
