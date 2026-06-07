@@ -12,13 +12,9 @@ import tkinter as tk
 RENODE_HOST = "127.0.0.1"
 RENODE_PORT = 3334
 
-# GPIO register bases from nRF52840 (SVD)
-# P0 base: 0x50000000,  OUT offset: 0x504,  IN offset: 0x510
-# P1 base: 0x50000300,  OUT offset: 0x504,  IN offset: 0x510
-GPIO0_OUT = 0x50000504
-GPIO1_OUT = 0x50000804
-GPIO0_IN  = 0x50000510
-GPIO1_IN  = 0x50000810
+# Mirror addresses maintained by gpio_mirror.py hook
+MIRROR_P0 = 0x4001F000
+MIRROR_P1 = 0x4001F004
 
 
 class RenodeClient:
@@ -198,7 +194,31 @@ class SP1GUI:
         threading.Thread(target=_try, daemon=True).start()
 
     def _start_polling(self):
-        pass
+        self.led_map = {
+            "p1": (MIRROR_P1, 13),
+            "p2": (MIRROR_P0, 0),
+            "p3": (MIRROR_P1, 12),
+            "p4": (MIRROR_P0, 1),
+            "t1": (MIRROR_P0, 29),
+            "t2": (MIRROR_P0, 26),
+            "t3": (MIRROR_P1, 15),
+            "t4": (MIRROR_P1, 14),
+        }
+
+        def poll():
+            try:
+                out0 = self.renode.read32(MIRROR_P0)
+                out1 = self.renode.read32(MIRROR_P1)
+                for name, (base, pin) in self.led_map.items():
+                    val = out1 if base == MIRROR_P1 else out0
+                    color = self.RED if (val >> pin) & 1 else "#333"
+                    if name in self.led_widgets:
+                        self.led_widgets[name].itemconfigure(
+                            self.led_widgets[name], fill=color)
+            except Exception:
+                pass
+            self.root.after(100, poll)
+        self.root.after(500, poll)
 
     def run(self):
         self.root.mainloop()

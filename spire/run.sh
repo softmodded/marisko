@@ -48,6 +48,9 @@ fi
 
 renode --port 3334 -e "
 include @$DIR/sp1.repl
+
+python \"import sys; sys.path.insert(0, '$DIR/peripherals'); from gpio_mirror import apply; apply(machine)\"
+
 sysbus LoadELF @$FIRMWARE
 sysbus.cpu VectorTableOffset 0x20000
 
