@@ -46,6 +46,9 @@ if ! command -v renode &>/dev/null; then
     exit 1
 fi
 
+kill $(lsof -ti:3334) 2>/dev/null || true
+sleep 1
+
 renode --port 3334 -e "
 include @$DIR/sp1.repl
 
@@ -76,16 +79,22 @@ macro reset
 
 start
 
-# Log all GPIO and RAM mirror writes to confirm firmware is running
-logAccess sysbus 0x2000FFF0 4
-logAccess sysbus 0x2000FFF4 4
-logAccess sysbus 0x50000508 4
-logAccess sysbus 0x5000050C 4
-logAccess sysbus 0x50000808 4
-logAccess sysbus 0x5000080C 4
-
 showAnalyzer sysbus.gpio0
 showAnalyzer sysbus.gpio1
+
+# Wait for firmware to start, then verify GPIO writes are happening
+sleep 5
+echo "=== RAM mirror check ==="
+echo "P0_OUT mirror (0x2000FFF0):"
+sysbus ReadDoubleWord 0x2000FFF0
+echo "P1_OUT mirror (0x2000FFF4):"
+sysbus ReadDoubleWord 0x2000FFF4
+echo "=== direct GPIO reads ==="
+echo "P0 OUT (0x50000504):"
+sysbus ReadDoubleWord 0x50000504
+echo "P1 OUT (0x50000804):"
+sysbus ReadDoubleWord 0x50000804
+echo "=== end check ==="
 " &
 RENODE_PID=$!
 sleep 3
