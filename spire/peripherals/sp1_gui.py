@@ -12,6 +12,12 @@ import tkinter as tk
 RENODE_HOST = "127.0.0.1"
 RENODE_PORT = 3334
 
+# GPIO register bases from nRF52840
+GPIO0_IN  = 0x50000510  # P0 input register
+GPIO0_OUT = 0x50000504  # P0 output register
+GPIO1_IN  = 0x50000310  # P1 input register
+GPIO1_OUT = 0x50000304  # P1 output register
+
 
 class RenodeClient:
     def __init__(self):
@@ -20,13 +26,31 @@ class RenodeClient:
 
     def connect(self, host=RENODE_HOST, port=RENODE_PORT):
         self.sock.settimeout(3)
-        self.sock.connect((host, port))
-        self._recv()
+        try:
+            self.sock.connect((host, port))
+            self._recv()
+            return True
+        except Exception:
+            return False
 
     def cmd(self, command):
         with self.lock:
-            self.sock.sendall((command + "\n").encode())
-            return self._recv()
+            try:
+                self.sock.sendall((command + "\n").encode())
+                return self._recv()
+            except Exception:
+                return ""
+
+    def read32(self, addr):
+        resp = self.cmd(f"sysbus ReadDoubleWord {hex(addr)}")
+        try:
+            parts = resp.strip().split()
+            for p in parts:
+                if p.startswith("0x"):
+                    return int(p, 16)
+        except:
+            pass
+        return 0
 
     def _recv(self):
         data = b""
@@ -58,6 +82,7 @@ class SP1GUI:
 
         self.renode = None
         self.led_widgets = {}
+        self.led_map = {}
         self._setup_ui()
         self._connect_renode()
 
@@ -112,8 +137,7 @@ class SP1GUI:
         self.fn_btn = tk.Button(fframe, text="\u2022\u2022", font=("Helvetica", 14, "bold"),
                                 width=4, height=1, bg="#0f3460", fg=self.FG,
                                 activebackground=self.RED, activeforeground="#fff",
-                                relief=tk.FLAT, bd=1,
-                                command=lambda: self._press_button("function"))
+                                relief=tk.FLAT, bd=1)
         self.fn_btn.pack()
 
         self._make_section("rocker + transport (ladder on ain1/p0.03)")
@@ -151,19 +175,14 @@ class SP1GUI:
         tk.Label(self.root, text=text.upper(), font=("Helvetica", 7, "bold"),
                  fg=self.DIM, bg=self.BG).pack(pady=(0, 2))
 
-    def _press_button(self, name):
-        if not self.renode:
-            return
-        if name == "function":
-            self.renode.cmd("btn_function PressAndRelease")
-
     def _connect_renode(self):
         def _try():
             try:
                 self.renode = RenodeClient()
-                self.renode.connect()
+                if not self.renode.connect():
+                    raise Exception("connection failed")
                 self.root.after(0, lambda: self.status.configure(
-                    text="connected — use renode console for led state", fg="#4ecca3"))
+                    text="connected", fg="#4ecca3"))
                 self._start_polling()
             except Exception:
                 msg = "no renode (retrying...)"
@@ -172,24 +191,27 @@ class SP1GUI:
         threading.Thread(target=_try, daemon=True).start()
 
     def _start_polling(self):
+        # LED pin mapping from stemplayer_pins.h
+        # Playback LEDs: P1.13, P0.00, P1.12, P0.01
+        # Track LEDs:    P0.29, P0.26, P1.15, P1.14
+        self.led_map = {
+            "p1": (GPIO1_OUT, 13),
+            "p2": (GPIO0_OUT, 0),
+            "p3": (GPIO1_OUT, 12),
+            "p4": (GPIO0_OUT, 1),
+            "t1": (GPIO0_OUT, 29),
+            "t2": (GPIO0_OUT, 26),
+            "t3": (GPIO1_OUT, 15),
+            "t4": (GPIO1_OUT, 14),
+        }
+
         def poll():
             try:
-                pins = {
-                    "p1": ("led_pb1",),
-                    "p2": ("led_pb2",),
-                    "p3": ("led_pb3",),
-                    "p4": ("led_pb4",),
-                    "t1": ("led_t1",),
-                    "t2": ("led_t2",),
-                    "t3": ("led_t3",),
-                    "t4": ("led_t4",),
-                }
-                for name, (led,) in pins.items():
-                    resp = self.renode.cmd(f"{led} State")
-                    if "True" in resp:
-                        color = self.RED
-                    else:
-                        color = "#333"
+                out0 = self.renode.read32(GPIO0_OUT)
+                out1 = self.renode.read32(GPIO1_OUT)
+                for name, (base, pin) in self.led_map.items():
+                    val = out1 if base == GPIO1_OUT else out0
+                    color = self.RED if (val >> pin) & 1 else "#333"
                     if name in self.led_widgets:
                         self.led_widgets[name].itemconfigure(
                             self.led_widgets[name], fill=color)
