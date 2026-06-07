@@ -38,10 +38,11 @@ static void delay_50ms(void)
 
 static int read_ladder(void)
 {
+	static int dead = 0;
+	if (dead) return -1;
+
 	NRF_SAADC->ENABLE = SAADC_ENABLE_ENABLE_Enabled << SAADC_ENABLE_ENABLE_Pos;
-
 	NRF_SAADC->RESOLUTION = SAADC_RESOLUTION_VAL_12bit << SAADC_RESOLUTION_VAL_Pos;
-
 	NRF_SAADC->CH[0].PSELP = SAADC_CH_PSELP_PSELP_AnalogInput0 << SAADC_CH_PSELP_PSELP_Pos;
 	NRF_SAADC->CH[0].PSELN = SAADC_CH_PSELN_PSELN_NC << SAADC_CH_PSELN_PSELN_Pos;
 	NRF_SAADC->CH[0].CONFIG =
@@ -55,23 +56,21 @@ static int read_ladder(void)
 	NRF_SAADC->RESULT.MAXCNT = 1;
 
 	NRF_SAADC->TASKS_START = 1;
-	for (volatile int timeout = 0; timeout < 50000; timeout++) {
-		if (NRF_SAADC->EVENTS_END)
-			break;
+	for (volatile int t = 0; t < 1000; t++) {
+		if (NRF_SAADC->EVENTS_END) break;
 	}
 	if (!NRF_SAADC->EVENTS_END) {
+		dead = 1;
 		NRF_SAADC->ENABLE = SAADC_ENABLE_ENABLE_Disabled << SAADC_ENABLE_ENABLE_Pos;
 		return -1;
 	}
 	NRF_SAADC->EVENTS_END = 0;
 
 	NRF_SAADC->TASKS_STOP = 1;
-	for (volatile int timeout = 0; timeout < 50000; timeout++) {
-		if (NRF_SAADC->EVENTS_STOPPED)
-			break;
+	for (volatile int t = 0; t < 1000; t++) {
+		if (NRF_SAADC->EVENTS_STOPPED) break;
 	}
 	NRF_SAADC->EVENTS_STOPPED = 0;
-
 	NRF_SAADC->ENABLE = SAADC_ENABLE_ENABLE_Disabled << SAADC_ENABLE_ENABLE_Pos;
 
 	if (result < 0) result = 0;
