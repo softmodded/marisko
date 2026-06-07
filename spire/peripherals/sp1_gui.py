@@ -190,23 +190,22 @@ class SP1GUI:
             self._led_canvases[name] = c
 
         # Function button (below LEDs)
-        fn_btn = tk.Button(self.root, text="••", font=("Helvetica", 12, "bold"),
-                           width=4, height=2, bg=self.DARK, fg=self.SILVER, relief=tk.FLAT,
+        fn_btn = tk.Button(self.root, text="FUNC", font=("Helvetica", 9, "bold"),
+                           width=5, height=2, bg=self.DARK, fg=self.SILVER, relief=tk.FLAT,
                            activebackground="#555", activeforeground="#fff")
-        fn_btn.place(x=rcx - 4, y=440)
+        fn_btn.place(x=rcx - 12, y=440)
 
         # --- Top face: Volume circles + Rocker ---
         top_y = 34
-        vol_colors = [(self.DARK, self.DARK)]
 
         # Volume up (circle)
-        self._make_circle_button(right_x - 80, top_y, "+")
+        self._make_circle_button(body_x + 20, top_y, "+")
         # Volume down (circle)
-        self._make_circle_button(right_x - 40, top_y, "−")
+        self._make_circle_button(body_x + 50, top_y, "−")
 
-        # Rocker (◀◀ / ▶▶)
+        # Rocker (◀◀ / ▶▶) on left side
         rframe = tk.Frame(self.root, bg=self.SILVER)
-        rframe.place(x=body_x + 160, y=top_y - 10)
+        rframe.place(x=body_x + 5, y=top_y + 30)
         btn_prev = tk.Button(rframe, text="◀◀", font=("Helvetica", 7),
                              width=3, height=1, bg=self.DARK, fg=self.SILVER, relief=tk.FLAT)
         btn_prev.pack(pady=1)
