@@ -75,6 +75,15 @@ macro reset
 \"\"\"
 
 start
+
+# Log all GPIO and RAM mirror writes to confirm firmware is running
+logAccess sysbus 0x2000FFF0 4
+logAccess sysbus 0x2000FFF4 4
+logAccess sysbus 0x50000508 4
+logAccess sysbus 0x5000050C 4
+logAccess sysbus 0x50000808 4
+logAccess sysbus 0x5000080C 4
+
 showAnalyzer sysbus.gpio0
 showAnalyzer sysbus.gpio1
 " &
