@@ -17,6 +17,15 @@ cleanup() {
 }
 trap cleanup INT TERM
 
+if [ -z "$ZEPHYR_SDK_INSTALL_DIR" ]; then
+    ZEPHYR_SDK_INSTALL_DIR="$(dirname "$PROJECT_DIR")/zephyr-sdk-0.17.0"
+    if [ ! -d "$ZEPHYR_SDK_INSTALL_DIR" ]; then
+        echo "[spire] ZEPHYR_SDK_INSTALL_DIR not set and default path not found" >&2
+        echo "[spire] set it: export ZEPHYR_SDK_INSTALL_DIR=/path/to/zephyr-sdk-0.17.0" >&2
+        exit 1
+    fi
+fi
+
 echo "[spire] building firmware..."
 cd "$PROJECT_DIR"
 west build -b sp1 -d build app -- \
