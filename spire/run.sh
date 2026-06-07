@@ -74,6 +74,8 @@ macro reset
 \"\"\"
 
 start
+showAnalyzer sysbus.gpio0
+showAnalyzer sysbus.gpio1
 " &
 RENODE_PID=$!
 sleep 3

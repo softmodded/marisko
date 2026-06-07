@@ -12,11 +12,13 @@ import tkinter as tk
 RENODE_HOST = "127.0.0.1"
 RENODE_PORT = 3334
 
-# GPIO register bases from nRF52840
-GPIO0_IN  = 0x50000510  # P0 input register
-GPIO0_OUT = 0x50000504  # P0 output register
-GPIO1_IN  = 0x50000310  # P1 input register
-GPIO1_OUT = 0x50000304  # P1 output register
+# GPIO register bases from nRF52840 (SVD)
+# P0 base: 0x50000000,  OUT offset: 0x504,  IN offset: 0x510
+# P1 base: 0x50000300,  OUT offset: 0x504,  IN offset: 0x510
+GPIO0_OUT = 0x50000504
+GPIO1_OUT = 0x50000804
+GPIO0_IN  = 0x50000510
+GPIO1_IN  = 0x50000810
 
 
 class RenodeClient:
@@ -46,8 +48,13 @@ class RenodeClient:
         try:
             parts = resp.strip().split()
             for p in parts:
-                if p.startswith("0x"):
-                    return int(p, 16)
+                clean = p.strip().rstrip('.')
+                if clean.startswith("0x") or clean.startswith("-0x"):
+                    return int(clean, 16)
+                try:
+                    return int(clean)
+                except ValueError:
+                    continue
         except:
             pass
         return 0
@@ -191,34 +198,7 @@ class SP1GUI:
         threading.Thread(target=_try, daemon=True).start()
 
     def _start_polling(self):
-        # LED pin mapping from stemplayer_pins.h
-        # Playback LEDs: P1.13, P0.00, P1.12, P0.01
-        # Track LEDs:    P0.29, P0.26, P1.15, P1.14
-        self.led_map = {
-            "p1": (GPIO1_OUT, 13),
-            "p2": (GPIO0_OUT, 0),
-            "p3": (GPIO1_OUT, 12),
-            "p4": (GPIO0_OUT, 1),
-            "t1": (GPIO0_OUT, 29),
-            "t2": (GPIO0_OUT, 26),
-            "t3": (GPIO1_OUT, 15),
-            "t4": (GPIO1_OUT, 14),
-        }
-
-        def poll():
-            try:
-                out0 = self.renode.read32(GPIO0_OUT)
-                out1 = self.renode.read32(GPIO1_OUT)
-                for name, (base, pin) in self.led_map.items():
-                    val = out1 if base == GPIO1_OUT else out0
-                    color = self.RED if (val >> pin) & 1 else "#333"
-                    if name in self.led_widgets:
-                        self.led_widgets[name].itemconfigure(
-                            self.led_widgets[name], fill=color)
-            except Exception:
-                pass
-            self.root.after(100, poll)
-        self.root.after(500, poll)
+        pass
 
     def run(self):
         self.root.mainloop()
