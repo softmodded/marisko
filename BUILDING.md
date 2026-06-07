@@ -105,3 +105,12 @@ dd if=/tmp/full.bin of=build/sp1_firmware.bin bs=1 skip=131072
 ## emulator
 
 see **[spire](spire/README.md)** for the renode-based sp-1 hardware emulator. test firmware with virtual buttons, leds, audio visualization, and gdb debugging — no risk of bricking a real device.
+
+quick start:
+
+```
+cd spire
+./run.sh
+```
+
+this builds the firmware, launches renode, and opens the virtual device gui — all in one command.

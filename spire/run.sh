@@ -1,10 +1,12 @@
 #!/bin/bash
 # spire — SP-1 Emulator launcher
-# Starts Renode with the SP-1 platform and the virtual GUI
+# Builds firmware, starts Renode with the SP-1 platform and virtual GUI
 
 set -e
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(dirname "$DIR")"
+FIRMWARE="$PROJECT_DIR/build/app/zephyr/zephyr.elf"
 
 cleanup() {
     echo ""
@@ -15,8 +17,19 @@ cleanup() {
 }
 trap cleanup INT TERM
 
+echo "[spire] building firmware..."
+cd "$PROJECT_DIR"
+west build -b sp1 -d build app -- \
+  -DBOARD_ROOT="$PROJECT_DIR" \
+  -DZEPHYR_SDK_INSTALL_DIR="$ZEPHYR_SDK_INSTALL_DIR"
+
+if [ ! -f "$FIRMWARE" ]; then
+    echo "[spire] build failed — no $FIRMWARE" >&2
+    exit 1
+fi
+
 echo "[spire] starting renode with sp-1 platform..."
-renode --console "$DIR/sp1.repl" &
+renode --console -e "sysbus LoadELF @$FIRMWARE; start" "$DIR/sp1.repl" &
 RENODE_PID=$!
 sleep 2
 
@@ -29,11 +42,11 @@ echo ""
 echo "  ╔══════════════════════════════════════╗"
 echo "  ║         spire emulator ready         ║"
 echo "  ║                                      ║"
-echo "  ║  renode console: localhost:3334      ║"
-echo "  ║  virtual device:  gui window         ║"
+echo "  ║  firmware:  $FIRMWARE"
+echo "  ║  renode:    localhost:3334           ║"
+echo "  ║  gui:       virtual device window    ║"
 echo "  ║                                      ║"
-echo "  ║  type 'q' then 'quit' in renode to   ║"
-echo "  ║  stop.  press ctrl+c here to exit.   ║"
+echo "  ║  press ctrl+c to exit                ║"
 echo "  ╚══════════════════════════════════════╝"
 echo ""
 
