@@ -51,10 +51,12 @@ renode --console --port 3334 -e "
 include @$DIR/sp1.repl
 sysbus LoadELF @$FIRMWARE
 sysbus.cpu VectorTableOffset 0x20000
+sysbus WriteDoubleWord 0x1000120C 0xFFFFFFFE
 macro reset
 \"\"\"
     sysbus LoadELF @$FIRMWARE
     sysbus.cpu VectorTableOffset 0x20000
+    sysbus WriteDoubleWord 0x1000120C 0xFFFFFFFE
 \"\"\"
 start
 " &
