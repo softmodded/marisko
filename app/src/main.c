@@ -1,9 +1,5 @@
 #include <zephyr/kernel.h>
-#include <zephyr/device.h>
-#include <zephyr/drivers/watchdog.h>
 #include <soc.h>
-
-#define WDT_NODE DT_ALIAS(watchdog0)
 
 struct led { NRF_GPIO_Type *port; uint32_t pin; };
 static const struct led leds[] = {
@@ -36,8 +32,6 @@ static void delay_50ms(void)
 
 int main(void)
 {
-	const struct device *wdt = DEVICE_DT_GET(WDT_NODE);
-
 	NRF_P0->PIN_CNF[27] = (GPIO_PIN_CNF_DIR_Input    << GPIO_PIN_CNF_DIR_Pos)   |
 			       (GPIO_PIN_CNF_PULL_Pullup << GPIO_PIN_CNF_PULL_Pos) |
 			       (GPIO_PIN_CNF_INPUT_Connect << GPIO_PIN_CNF_INPUT_Pos);
@@ -49,13 +43,6 @@ int main(void)
 			(GPIO_PIN_CNF_INPUT_Connect << GPIO_PIN_CNF_INPUT_Pos);
 
 	all_off();
-
-	if (device_is_ready(wdt)) {
-		wdt_install_timeout(wdt, &(struct wdt_timeout_cfg){
-			.window.max = 4000, .callback = NULL,
-		});
-		wdt_setup(wdt, 0);
-	}
 
 	int pos = 0, dir = 1;
 
