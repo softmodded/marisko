@@ -204,6 +204,7 @@ class SP1GUI:
             try:
                 out0 = self.renode.read32(LED_P0_ADDR)
                 out1 = self.renode.read32(LED_P1_ADDR)
+                print(f"[spire-gui] P0=0x{out0:08X} P1=0x{out1:08X}", flush=True)
                 for name, (base, pin) in self.led_map.items():
                     val = out1 if base == LED_P1_ADDR else out0
                     color = self.RED if (val >> pin) & 1 else "#333"
