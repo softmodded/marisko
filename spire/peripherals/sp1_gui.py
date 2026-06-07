@@ -84,7 +84,11 @@ class SP1GUI:
         self._setup_ui()
         self._connect_renode()
 
+    def led_canvases(self, name):
+        return self._led_canvases[name]
+
     def _setup_ui(self):
+        self._led_canvases = {}
         tk.Label(self.root, text="spire", font=("Helvetica", 18, "bold"),
                  fg=self.RED, bg=self.BG).pack(pady=(12, 2))
         tk.Label(self.root, text="sp-1 stem player emulator",
@@ -97,6 +101,7 @@ class SP1GUI:
             c = tk.Canvas(tframe, width=28, height=28, bg=self.BG, highlightthickness=0)
             c.pack(side=tk.LEFT, padx=14)
             self.led_widgets[name] = c.create_oval(4, 4, 24, 24, fill="#333", outline=self.DIM)
+            self._led_canvases[name] = c
             tk.Label(tframe, text=name, font=("Helvetica", 7), fg="#666", bg=self.BG).pack(side=tk.LEFT, padx=(0, 8))
 
         self._make_section("track buttons (ladder on ain0/p0.02)")
@@ -127,6 +132,7 @@ class SP1GUI:
             c = tk.Canvas(lframe, width=28, height=28, bg=self.BG, highlightthickness=0)
             c.pack(side=tk.LEFT, padx=14)
             self.led_widgets[name] = c.create_oval(4, 4, 24, 24, fill="#333", outline=self.DIM)
+            self._led_canvases[name] = c
             tk.Label(lframe, text=name, font=("Helvetica", 7), fg="#666", bg=self.BG).pack(side=tk.LEFT, padx=(0, 8))
 
         self._make_section("function button (p0.27)")
@@ -208,8 +214,8 @@ class SP1GUI:
                 for name, (base, pin) in self.led_map.items():
                     val = out1 if base == LED_P1_ADDR else out0
                     color = self.RED if (val >> pin) & 1 else "#333"
-                    if name in self.led_widgets:
-                        self.led_widgets[name].itemconfigure(
+                    if name in self.led_widgets and name in self._led_canvases:
+                        self._led_canvases[name].itemconfigure(
                             self.led_widgets[name], fill=color)
             except Exception:
                 pass
