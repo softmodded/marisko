@@ -45,7 +45,16 @@ if ! command -v renode &>/dev/null; then
     echo "  other: https://renode.io/#downloads" >&2
     exit 1
 fi
-renode --console -e "sysbus LoadELF @$FIRMWARE; start" "$DIR/sp1.repl" &
+
+# Start Renode, load platform, load firmware, start emulation
+renode --console -e "
+include @$DIR/sp1.repl
+sysbus LoadELF @$FIRMWARE
+showAnalyzer gpioPortB
+showAnalyzer gpioPortC
+showAnalyzer gpioPortD
+start
+" &
 RENODE_PID=$!
 sleep 2
 
@@ -55,15 +64,15 @@ GUI_PID=$!
 sleep 1
 
 echo ""
-echo "  ╔══════════════════════════════════════╗"
-echo "  ║         spire emulator ready         ║"
-echo "  ║                                      ║"
-echo "  ║  firmware:  $FIRMWARE"
-echo "  ║  renode:    localhost:3334           ║"
-echo "  ║  gui:       virtual device window    ║"
-echo "  ║                                      ║"
-echo "  ║  press ctrl+c to exit                ║"
-echo "  ╚══════════════════════════════════════╝"
+echo "  +------------------------------------------+"
+echo "  |         spire emulator ready             |"
+echo "  |                                          |"
+echo "  |  firmware:  $FIRMWARE"
+echo "  |  renode:    localhost:3334               |"
+echo "  |  gui:       virtual device window        |"
+echo "  |                                          |"
+echo "  |  press ctrl+c to exit                    |"
+echo "  +------------------------------------------+"
 echo ""
 
 wait $RENODE_PID 2>/dev/null

@@ -1,48 +1,23 @@
-# SP-1 Stem Player — Renode Platform Description
-# Models the TE SP-1 hardware (nRF52840) for firmware testing
-
 using "platforms/cpus/nrf52840.repl"
 
-sp1LEDs: GPIOPort.LEDs @ gpioPortB 0x50000000
-	0 -> playback2@0  { gpio: gpio0 }
-	1 -> playback4@1  { gpio: gpio0 }
-	12 -> playback3@12 { gpio: gpio1 }
-	13 -> playback1@13 { gpio: gpio1 }
+sp1_playback_leds: GPIOPort.LEDs @ gpioPortB 0x50000000
+    0 -> led_playback_2@0 { gpio: gpio0 }
+    1 -> led_playback_4@1 { gpio: gpio0 }
+    12 -> led_playback_3@12 { gpio: gpio1 }
+    13 -> led_playback_1@13 { gpio: gpio1 }
 
-sp1TrackLEDs: GPIOPort.LEDs @ gpioPortC 0x50000000
-	29 -> track1@29 { gpio: gpio0 }
-	26 -> track2@26 { gpio: gpio0 }
-	15 -> track3@15 { gpio: gpio1 }
-	14 -> track4@14 { gpio: gpio1 }
+sp1_track_leds: GPIOPort.LEDs @ gpioPortC 0x50000000
+    29 -> led_track_1@29 { gpio: gpio0 }
+    26 -> led_track_2@26 { gpio: gpio0 }
+    15 -> led_track_3@15 { gpio: gpio1 }
+    14 -> led_track_4@14 { gpio: gpio1 }
 
-sp1FnButton: GPIOPort.Buttons @ gpioPortD 0x50000000
-	27 -> function@27 { gpio: gpio0 }
-
-sp1Ladder1: GPIOPort.Buttons @ gpioPortE 0x50000000
-	2 -> play@2     { gpio: gpio0 }
-	2 -> track1@2   { gpio: gpio0 }
-	2 -> track2@2   { gpio: gpio0 }
-	2 -> track3@2   { gpio: gpio0 }
-	2 -> track4@2   { gpio: gpio0 }
-
-adc: Analog.ADC.ContinuousStub @ sysbus 0x40007000
-	channel0: Analog.ADCChannel @ 0 2
+sp1_fn_button: GPIOPort.Buttons @ gpioPortD 0x50000000
+    27 -> btn_function@27 { gpio: gpio0 }
 
 i2c0: I2C.NRF52840 @ sysbus 0x40003000
-	0x18: I2C.StubPeripheral @ sysbus 0x40003000
-		status: ok
-	0x48: I2C.StubPeripheral @ sysbus 0x40003000
-		status: ok
+    0x18: I2C.StubPeripheral @ sysbus 0x40003000
+    0x48: I2C.StubPeripheral @ sysbus 0x40003000
 
-sp1_nvm: Memory.MappedMemory @ sysbus 0xA0000000
-	size: 0x100000000
-
-sp1_audio: UART.NRF52840 @ sysbus 0x40028000
-	baudRate: 115200
-
-sysbus:
-	init:
-		ApplyPythonCode @sysbus """
-import os, sys
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'peripherals'))
-"""
+sp1_eMMC: Memory.MappedMemory @ sysbus 0xA0000000
+    size: 0x100000000
