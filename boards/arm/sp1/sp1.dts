@@ -49,7 +49,3 @@
 &gpiote {
 	status = "okay";
 };
-
-&adc {
-	status = "okay";
-};

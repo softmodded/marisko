@@ -1,3 +1,4 @@
 [submodule "spire"]
 	path = spire
 	url = https://github.com/softmodded/spire.git
+	branch = main

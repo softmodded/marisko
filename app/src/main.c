@@ -1,10 +1,5 @@
 #include <zephyr/kernel.h>
-#include <zephyr/device.h>
-#include <zephyr/drivers/adc.h>
 #include <soc.h>
-
-#define ADC_NODE DT_NODELABEL(adc)
-#define LADDER_CH 0
 
 struct led { NRF_GPIO_Type *port; uint32_t pin; };
 static const struct led pb_leds[] = {
@@ -41,24 +36,50 @@ static void delay_50ms(void)
 		__ASM volatile ("nop");
 }
 
-static int read_ladder(const struct device *adc_dev)
+static int read_ladder(void)
 {
-	int16_t val = 0;
-	struct adc_sequence seq = {
-		.channels = BIT(LADDER_CH),
-		.buffer = &val,
-		.buffer_size = sizeof(val),
-		.resolution = 12,
-		.oversampling = 4,
-	};
-	if (adc_read(adc_dev, &seq) < 0) return -1;
-	return val;
+	NRF_SAADC->ENABLE = SAADC_ENABLE_ENABLE_Enabled << SAADC_ENABLE_ENABLE_Pos;
+
+	NRF_SAADC->RESOLUTION = SAADC_RESOLUTION_VAL_12bit << SAADC_RESOLUTION_VAL_Pos;
+
+	NRF_SAADC->CH[0].PSELP = SAADC_CH_PSELP_PSELP_AnalogInput0 << SAADC_CH_PSELP_PSELP_Pos;
+	NRF_SAADC->CH[0].PSELN = SAADC_CH_PSELN_PSELN_NC << SAADC_CH_PSELN_PSELN_Pos;
+	NRF_SAADC->CH[0].CONFIG =
+		(SAADC_CH_CONFIG_REFSEL_Internal << SAADC_CH_CONFIG_REFSEL_Pos) |
+		(SAADC_CH_CONFIG_GAIN_Gain1_6 << SAADC_CH_CONFIG_GAIN_Pos) |
+		(SAADC_CH_CONFIG_TACQ_10us << SAADC_CH_CONFIG_TACQ_Pos) |
+		(SAADC_CH_CONFIG_MODE_SE << SAADC_CH_CONFIG_MODE_Pos);
+
+	int16_t result = 0;
+	NRF_SAADC->RESULT.PTR = (uint32_t)&result;
+	NRF_SAADC->RESULT.MAXCNT = 1;
+
+	NRF_SAADC->TASKS_START = 1;
+	for (volatile int timeout = 0; timeout < 50000; timeout++) {
+		if (NRF_SAADC->EVENTS_END)
+			break;
+	}
+	if (!NRF_SAADC->EVENTS_END) {
+		NRF_SAADC->ENABLE = SAADC_ENABLE_ENABLE_Disabled << SAADC_ENABLE_ENABLE_Pos;
+		return -1;
+	}
+	NRF_SAADC->EVENTS_END = 0;
+
+	NRF_SAADC->TASKS_STOP = 1;
+	for (volatile int timeout = 0; timeout < 50000; timeout++) {
+		if (NRF_SAADC->EVENTS_STOPPED)
+			break;
+	}
+	NRF_SAADC->EVENTS_STOPPED = 0;
+
+	NRF_SAADC->ENABLE = SAADC_ENABLE_ENABLE_Disabled << SAADC_ENABLE_ENABLE_Pos;
+
+	if (result < 0) result = 0;
+	return result;
 }
 
 int main(void)
 {
-	const struct device *adc_dev = DEVICE_DT_GET(ADC_NODE);
-
 	NRF_P0->PIN_CNF[27] = (GPIO_PIN_CNF_DIR_Input    << GPIO_PIN_CNF_DIR_Pos)   |
 			       (GPIO_PIN_CNF_PULL_Pullup << GPIO_PIN_CNF_PULL_Pos) |
 			       (GPIO_PIN_CNF_INPUT_Connect << GPIO_PIN_CNF_INPUT_Pos);
@@ -93,15 +114,13 @@ int main(void)
 			for (;;);
 		}
 
-		int ladder = device_is_ready(adc_dev) ? read_ladder(adc_dev) : -1;
+		int ladder = read_ladder();
 		int pressed = 0;
-		if (ladder >= 0) {
-			if (ladder < 100)      pressed = 0;
-			else if (ladder < 800)  pressed = 1;
-			else if (ladder < 1500) pressed = 2;
-			else if (ladder < 2200) pressed = 3;
-			else if (ladder < 3000) pressed = 4;
-		}
+		if (ladder < 100)      pressed = 0;
+		else if (ladder < 800)  pressed = 1;
+		else if (ladder < 1500) pressed = 2;
+		else if (ladder < 2200) pressed = 3;
+		else if (ladder < 3000) pressed = 4;
 
 		for (int i = 0; i < NUM_TRK_LEDS; i++) {
 			if (pressed == i + 1)
