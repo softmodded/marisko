@@ -13,8 +13,8 @@ RENODE_HOST = "127.0.0.1"
 RENODE_PORT = 3334
 
 # GPIO state mirrored to these RAM addresses by firmware (emulator I/O)
-LED_P0_ADDR = 0x2000FFF0
-LED_P1_ADDR = 0x2000FFF4
+LED_P1_ADDR = 0x2000FFF0
+LED_P0_ADDR = 0x2000FFF4
 
 
 class RenodeClient:
