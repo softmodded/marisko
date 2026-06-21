@@ -214,23 +214,17 @@ static void handle_codec_diag(void)
 	uint32_t ru = audio_last_read_us();
 	((uint8_t *)&diag)[27] = (uint8_t)(ru);
 	((uint8_t *)&diag)[28] = (uint8_t)(ru >> 8);
-	/* Live AIN0 (button ladder 1: play + 4 track buttons) into bytes 29..30. */
-	int ain0 = saadc_read(1u);  /* PSELP=1 → AIN0 (ladder 1: play + tracks) */
-	if (ain0 < 0) ain0 = 0;
-	((uint8_t *)&diag)[29] = (uint8_t)(ain0);
-	((uint8_t *)&diag)[30] = (uint8_t)((uint32_t)ain0 >> 8);
-	/* Multiblock write diag: cur_block(23..26) reused for mb_count; read_us hi
-	 * byte (28) reused for fail reason (valid when not playing). */
 	/* Upload-fail diag: fail block (23..26), fail reason (28: 1=usb 2=write). */
 	((uint8_t *)&diag)[23] = (uint8_t)(g_ul_fail_block);
 	((uint8_t *)&diag)[24] = (uint8_t)(g_ul_fail_block >> 8);
 	((uint8_t *)&diag)[25] = (uint8_t)(g_ul_fail_block >> 16);
 	((uint8_t *)&diag)[26] = (uint8_t)(g_ul_fail_block >> 24);
 	((uint8_t *)&diag)[28] = g_ul_fail;
-	/* Last-block busy-wait µs into bytes 29..30 (overwrites AIN0 below if set). */
-	uint32_t bw = emmc_busy_us();
-	((uint8_t *)&diag)[29] = (uint8_t)(bw);
-	((uint8_t *)&diag)[30] = (uint8_t)(bw >> 8);
+	/* Live AIN1 (ladder 2: vol up/down + FWD/RWD) into bytes 29..30. */
+	int ain1 = saadc_read(2u);  /* PSELP=2 → AIN1 */
+	if (ain1 < 0) ain1 = 0;
+	((uint8_t *)&diag)[29] = (uint8_t)(ain1);
+	((uint8_t *)&diag)[30] = (uint8_t)((uint32_t)ain1 >> 8);
 	send_ok((const uint8_t *)&diag, sizeof(diag));
 }
 

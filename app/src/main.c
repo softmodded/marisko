@@ -182,22 +182,59 @@ int main(void)
 	 * Detect a press as a window around 1808; toggle play/pause on the edge. */
 	int play_prev = 0;
 
+	/* Speaker volume: 8 levels (0 = mute … 7 = loud) → TAS2505 P1/R46 attenuation
+	 * (0x00 = 0 dB loudest, larger = quieter). Vol +/- on ladder 2 (AIN1):
+	 * measured idle≈0, vol+≈1806, vol-≈729. Boot at a night-friendly level. */
+	static const uint8_t vol_r46[8] = {0x7F, 0x48, 0x3C, 0x30, 0x24, 0x18, 0x0C, 0x00};
+	int vol_level  = 3;
+	int volup_prev = 0;
+	int voldn_prev = 0;
+	int meter_ticks = 0;   /* loops left to show the volume bar before bounce resumes */
+	codec_speaker_volume(vol_r46[vol_level]);
+
 	while (1) {
 		if (!(NRF_P0->IN & (1u << 27)))
 			enter_system_off();
 
 		bool uploading = usb_upload_active();
 
-		/* Play/pause button (edge-triggered). */
+		/* Play/pause button (edge-triggered) on ladder 1 (AIN0). */
 		int ladder = saadc_read(1u);  /* AIN0 */
 		int play_now = (ladder >= 1650 && ladder <= 1980);
 		if (play_now && !play_prev)
 			audio_toggle();
 		play_prev = play_now;
 
-		/* pb_leds: bounce animation */
+		/* Volume +/- (edge-triggered) on ladder 2 (AIN1). */
+		int vladder = saadc_read(2u);  /* AIN1 */
+		int volup_now = (vladder >= 1600 && vladder <= 1980);
+		int voldn_now = (vladder >=  600 && vladder <=  860);
+		if (volup_now && !volup_prev && vol_level < 7) {
+			vol_level++;
+			codec_speaker_volume(vol_r46[vol_level]);
+			meter_ticks = 40;
+		}
+		if (voldn_now && !voldn_prev && vol_level > 0) {
+			vol_level--;
+			codec_speaker_volume(vol_r46[vol_level]);
+			meter_ticks = 40;
+		}
+		volup_prev = volup_now;
+		voldn_prev = voldn_now;
+
+		/* pb_leds: volume bar on change (≈1.2 s), bounce animation otherwise. */
 		all_pb_off();
-		set_pb_on(pb_pos);
+		if (meter_ticks > 0) {
+			meter_ticks--;
+			int lit = (vol_level * NUM_PB_LEDS + 3) / 7;  /* 0..4 segments */
+			for (int i = 0; i < lit; i++)
+				set_pb_on(i);
+		} else {
+			set_pb_on(pb_pos);
+			pb_pos += pb_dir;
+			if (pb_pos == NUM_PB_LEDS - 1) pb_dir = -1;
+			if (pb_pos == 0)               pb_dir =  1;
+		}
 
 		/* Renode mirror: expose GPIO state for emulator observation */
 		*(volatile uint32_t *)0x2000FFF0 = NRF_P0->OUT;
@@ -208,10 +245,6 @@ int main(void)
 		feed_wdt();
 		if (!uploading)
 			k_msleep(30);   /* yield CPU to the feed thread between polls */
-
-		pb_pos += pb_dir;
-		if (pb_pos == NUM_PB_LEDS - 1) pb_dir = -1;
-		if (pb_pos == 0)               pb_dir =  1;
 
 		if (!(NRF_P0->IN & (1u << 27)))
 			enter_system_off();
