@@ -2,6 +2,8 @@
 #include "codec.h"
 #include "emmc.h"
 #include "disk.h"
+#include "leds.h"
+#include "pwm.h"
 #include "util.h"
 
 #include <zephyr/device.h>
@@ -65,17 +67,22 @@ static volatile bool s_playing;
 /* Playlist: feed thread advances to the next catalog song at end-of-song,
  * wrapping after the last. disk_read_song runs in the feed thread (same thread
  * that owns the eMMC during playback) — no cross-thread bus race. */
-static uint16_t s_song_count;   /* total catalog entries */
-static uint16_t s_cur_song;     /* current catalog index */
+static uint16_t s_song_count;     /* total catalog entries */
+static uint16_t s_cur_song;       /* current catalog index */
+static volatile int s_skip_req;   /* +1 = next, -1 = prev (rocker); 0 = none */
 
-static void advance_song(void)
+/* Move to the next valid catalog song in direction dir (+1 next, -1 prev),
+ * wrapping. Runs in the feed thread (disk_read_song = eMMC). */
+static void change_song(int dir)
 {
 	if (s_song_count == 0) return;
 	disk_song_entry_t e;
-	for (uint16_t step = 1; step <= s_song_count; step++) {
-		uint16_t idx = (uint16_t)((s_cur_song + step) % s_song_count);
-		if (disk_read_song(idx, &e) && e.name[0] != '\0') {
-			s_cur_song          = idx;
+	int n = (int)s_song_count;
+	for (int step = 1; step <= n; step++) {
+		int idx = ((int)s_cur_song + dir * step) % n;
+		if (idx < 0) idx += n;
+		if (disk_read_song((uint16_t)idx, &e) && e.name[0] != '\0') {
+			s_cur_song          = (uint16_t)idx;
 			s_song_block_start  = e.block_start;
 			s_song_block_count  = e.block_count;
 			return;
@@ -92,6 +99,7 @@ static uint8_t  s_pf_buf[PREFETCH_BLOCKS * 512u];
 static uint32_t s_pf_pos;    /* next block index within s_pf_buf to decode */
 static uint32_t s_pf_count;  /* valid blocks currently in s_pf_buf */
 static volatile uint32_t s_last_read_us;  /* diag: µs per block of last refill */
+static volatile int32_t  s_peak;          /* peak-hold since last read (LED VU source) */
 
 static int16_t adpcm_step(uint8_t nibble, int ch)
 {
@@ -130,8 +138,9 @@ static void fill_block(int32_t *buf)
 
 	if (s_source == AUDIO_SRC_ADPCM && s_playing && s_song_block_count > 0
 	    && !emmc_write_multi_active()) {
-		if (s_cur_block >= s_song_block_count) {
-			advance_song();   /* next song (wrap after last); resets state below */
+		if (s_skip_req != 0 || s_cur_block >= s_song_block_count) {
+			change_song(s_skip_req < 0 ? -1 : 1);  /* rocker skip, or natural end */
+			s_skip_req  = 0;
 			s_cur_block = 0;
 			s_pf_pos = s_pf_count = 0;   /* force refill from block 0 */
 			for (int i = 0; i < 8; i++) { s_pred[i] = 0; s_sidx[i] = 0; }
@@ -157,6 +166,7 @@ static void fill_block(int32_t *buf)
 
 		{
 			const uint8_t *blk = s_pf_buf + s_pf_pos * 512u;
+			int32_t bufpeak = 0;
 			s_pf_pos++;
 			s_cur_block++;
 			for (uint32_t i = 0; i < FRAMES_PER_BLOCK; i++) {
@@ -179,10 +189,19 @@ static void fill_block(int32_t *buf)
 				if (l < -32768) l = -32768;
 				if (r >  32767) r =  32767;
 				if (r < -32768) r = -32768;
+				/* Track buffer peak for the LED visualizer. */
+				int32_t al = l < 0 ? -l : l;
+				int32_t ar = r < 0 ? -r : r;
+				if (al > bufpeak) bufpeak = al;
+				if (ar > bufpeak) bufpeak = ar;
 				/* 16-bit sample → 24-bit right-aligned (bits[23:8]) */
 				buf[2 * i]     = (int32_t)(l << 8);
 				buf[2 * i + 1] = (int32_t)(r << 8);
 			}
+			/* Peak-hold for the LED VU. Main reads + resets this every loop and
+			 * applies its own time-based decay — so the meter stays smooth even
+			 * while the feed thread is busy in a multi-block eMMC read. */
+			if (bufpeak > s_peak) s_peak = bufpeak;
 			return;
 		}
 tone_fallback:;
@@ -328,6 +347,15 @@ void audio_load_song(uint32_t block_start, uint32_t block_count)
 
 void audio_play(void)  { s_playing = true; }
 void audio_pause(void) { s_playing = false; }
+void audio_skip(int dir) { s_skip_req = (dir < 0) ? -1 : 1; }
+
+/* Return the peak held since the last call, and reset the accumulator. */
+uint32_t audio_level_take(void)
+{
+	int32_t v = s_peak;
+	s_peak = 0;
+	return (uint32_t)v;
+}
 
 void audio_toggle(void) { s_playing = !s_playing; }
 

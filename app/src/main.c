@@ -74,114 +74,39 @@ int main(void)
 
 	feed_wdt();
 
-	/* Block-0 read check: all 4 leds flash twice = success, led[0] fast blink = fail. */
-	{
-		static uint8_t block0[512];
-		if (emmc_read_block(0, block0)) {
-			for (int flash = 0; flash < 2; flash++) {
-				for (int i = 0; i < NUM_PB_LEDS; i++) set_pb_on(i);
-				delay_ms(300);
-				all_pb_off();
-				delay_ms(200);
-				feed_wdt();
+	/* Audio codec bring-up. Register state available over USB via CODEC_DIAG. */
+	bool codec_ok = codec_init();
+	feed_wdt();
+
+	/* Scan disk for the first valid song before starting I2S (no concurrent DMA). */
+	static disk_header_t s_dh;
+	static disk_song_entry_t s_se;
+	uint32_t song_block_start = 0, song_block_count = 0;
+	uint16_t first_song_idx = 0, total_songs = 0;
+	bool song_found = false;
+	if (disk_read_header(&s_dh) && s_dh.song_count > 0) {
+		total_songs = s_dh.song_count;
+		for (uint16_t i = 0; i < s_dh.song_count; i++) {
+			if (disk_read_song(i, &s_se) && s_se.name[0] != '\0') {
+				song_found       = true;
+				first_song_idx   = i;
+				song_block_start = s_se.block_start;
+				song_block_count = s_se.block_count;
+				break;
 			}
-		} else {
-			for (int i = 0; i < 8; i++) {
-				set_pb_on(0);
-				delay_ms(100);
-				all_pb_off();
-				delay_ms(100);
-			}
-			feed_wdt();
 		}
 	}
+	feed_wdt();
 
-	/* Cache diagnostic: 4 LEDs = cache+CMD6, 2 = cache only, 0 = no cache. */
-	{
-		feed_wdt();
-		delay_ms(500);
-		int leds = 0;
-		if (emmc_cache_size_kb() > 0) leds = emmc_cache_enabled() ? 4 : 2;
-		for (int i = 0; i < leds; i++) set_trk_on(i);
-		delay_ms(1000);
-		all_trk_off();
-		feed_wdt();
+	/* I2S bring-up + ADPCM playback. Starts paused; play button toggles. */
+	if (codec_ok && audio_init()) {
+		if (song_found) {
+			audio_set_source(AUDIO_SRC_ADPCM);
+			audio_set_playlist(total_songs, first_song_idx);
+			audio_load_song(song_block_start, song_block_count);
+		}
 	}
-
-	/* Audio codec bring-up. pb_led[3] solid = init clean; track[3] blink = I2C error.
-	 * Detailed register state available over USB via CODEC_DIAG (0x0B). */
-	{
-		feed_wdt();
-		bool codec_ok = codec_init();
-		feed_wdt();
-		if (codec_ok) {
-			set_pb_on(3);
-			delay_ms(600);
-			all_pb_off();
-		} else {
-			for (int i = 0; i < 4; i++) {
-				set_trk_on(3);
-				delay_ms(150);
-				all_trk_off();
-				delay_ms(150);
-			}
-		}
-		feed_wdt();
-
-		/* Scan disk for first valid song BEFORE starting I2S (no concurrent DMA).
-		 * Track LED 0 blink count:
-		 *   1 = header ok but no songs
-		 *   2 = song found → will play
-		 *   3 = disk_read_header failed */
-		static disk_header_t s_dh;
-		static disk_song_entry_t s_se;
-		uint32_t song_block_start = 0, song_block_count = 0;
-		uint16_t first_song_idx = 0, total_songs = 0;
-		bool song_found = false;
-		{
-			int diag_blinks;
-			if (!disk_read_header(&s_dh)) {
-				diag_blinks = 3;
-			} else if (s_dh.song_count == 0) {
-				diag_blinks = 1;
-			} else {
-				diag_blinks = 1;
-				total_songs = s_dh.song_count;
-				for (uint16_t i = 0; i < s_dh.song_count; i++) {
-					if (disk_read_song(i, &s_se) && s_se.name[0] != '\0') {
-						diag_blinks = 2;
-						song_found = true;
-						first_song_idx   = i;
-						song_block_start = s_se.block_start;
-						song_block_count  = s_se.block_count;
-						break;
-					}
-				}
-			}
-			for (int f = 0; f < diag_blinks; f++) {
-				set_trk_on(0); delay_ms(200);
-				all_trk_off();  delay_ms(200);
-				feed_wdt();
-			}
-		}
-		feed_wdt();
-
-		/* Stage 2: I2S bring-up. Stage 3: ADPCM playback. */
-		if (codec_ok && audio_init()) {
-			if (song_found) {
-				audio_set_source(AUDIO_SRC_ADPCM);
-				audio_set_playlist(total_songs, first_song_idx);
-				audio_load_song(song_block_start, song_block_count);
-				/* Start paused; play button toggles. Feed thread auto-advances
-				 * to the next song at end, wrapping after the last. */
-			}
-		}
-		feed_wdt();
-	}
-
-	/* LED bounce state */
-	int pb_pos = 0;
-	int pb_dir = 1;
+	feed_wdt();
 
 	/* Play button on ladder 1 (AIN0): measured idle≈0, play≈1808, track1≈210.
 	 * Detect a press as a window around 1808; toggle play/pause on the edge. */
@@ -194,7 +119,14 @@ int main(void)
 	int vol_level  = 3;
 	int volup_prev = 0;
 	int voldn_prev = 0;
+	int next_prev  = 0;
+	int prev_prev  = 0;
 	int meter_ticks = 0;   /* loops left to show the volume bar before bounce resumes */
+
+	/* Audio VU: reference for a full 4-bar bar (higher = less sensitive) and a
+	 * displayed envelope with instant attack + smooth time-based decay. */
+	const int VU_REF = 22000;
+	int vu_disp = 0;
 	codec_speaker_volume(vol_r46[vol_level]);
 
 	while (1) {
@@ -210,10 +142,12 @@ int main(void)
 			audio_toggle();
 		play_prev = play_now;
 
-		/* Volume +/- (edge-triggered) on ladder 2 (AIN1). */
+		/* Ladder 2 (AIN1): prev≈399, vol-≈729, next≈1207, vol+≈1806. */
 		int vladder = saadc_read(2u);  /* AIN1 */
-		int volup_now = (vladder >= 1600 && vladder <= 1980);
-		int voldn_now = (vladder >=  600 && vladder <=  860);
+		int volup_now = (vladder >= 1620 && vladder <= 1960);
+		int next_now  = (vladder >= 1080 && vladder <= 1340);
+		int voldn_now = (vladder >=  620 && vladder <=  860);
+		int prev_now  = (vladder >=  300 && vladder <=  520);
 		if (volup_now && !volup_prev && vol_level < 7) {
 			vol_level++;
 			codec_speaker_volume(vol_r46[vol_level]);
@@ -224,27 +158,38 @@ int main(void)
 			codec_speaker_volume(vol_r46[vol_level]);
 			meter_ticks = 40;
 		}
+		/* Prev/next rocker: skip song + ensure playing. */
+		if (next_now && !next_prev) { audio_skip(1);  audio_play(); }
+		if (prev_now && !prev_prev) { audio_skip(-1); audio_play(); }
 		volup_prev = volup_now;
 		voldn_prev = voldn_now;
+		next_prev  = next_now;
+		prev_prev  = prev_now;
 
-		/* pb_leds: volume bar on change (≈1.2 s), bounce animation otherwise.
-		 * Bar fills bottom→top (pb[3]=bottom) and the partial segment dims to
-		 * show the in-between level (8 levels across 4 LEDs). */
+		/* pb_leds: volume bar (≈1.2 s after a vol button), else live audio VU
+		 * while playing, else off. Bottom→top, partial segment dims. */
+		bool playing = audio_is_playing();
+		int fill;
 		if (meter_ticks > 0) {
 			meter_ticks--;
-			int fill = vol_level * NUM_PB_LEDS * PWM_TOP / 7;  /* 0..4·TOP */
-			for (int s = 0; s < NUM_PB_LEDS; s++) {
-				int b = fill - s * PWM_TOP;
-				if (b < 0)        b = 0;
-				if (b > PWM_TOP)  b = PWM_TOP;
-				pwm1_set_duty(NUM_PB_LEDS - 1 - s, (uint16_t)b);
-			}
+			fill = vol_level * NUM_PB_LEDS * PWM_TOP / 7;   /* 0..4·TOP */
+		} else if (playing) {
+			/* Instant attack, smooth decay (per loop) → smooth bounce, no freeze
+			 * even while the feed thread is mid eMMC read. */
+			int target = (int)audio_level_take();
+			if (target > vu_disp) vu_disp = target;
+			else                  vu_disp -= vu_disp / 6;
+			fill = (int)((int64_t)vu_disp * (NUM_PB_LEDS * PWM_TOP) / VU_REF);
+			if (fill > NUM_PB_LEDS * PWM_TOP) fill = NUM_PB_LEDS * PWM_TOP;
 		} else {
-			all_pb_off();
-			set_pb_on(pb_pos);
-			pb_pos += pb_dir;
-			if (pb_pos == NUM_PB_LEDS - 1) pb_dir = -1;
-			if (pb_pos == 0)               pb_dir =  1;
+			vu_disp = 0;
+			fill = 0;
+		}
+		for (int s = 0; s < NUM_PB_LEDS; s++) {
+			int b = fill - s * PWM_TOP;
+			if (b < 0)        b = 0;
+			if (b > PWM_TOP)  b = PWM_TOP;
+			pwm1_set_duty(NUM_PB_LEDS - 1 - s, (uint16_t)b);
 		}
 
 		/* Renode mirror: expose GPIO state for emulator observation */
@@ -255,7 +200,7 @@ int main(void)
 
 		feed_wdt();
 		if (!uploading)
-			k_msleep(30);   /* yield CPU to the feed thread between polls */
+			k_msleep(playing ? 18 : 30);   /* faster while playing → smoother VU */
 
 		if (!(NRF_P0->IN & (1u << 27)))
 			enter_system_off();

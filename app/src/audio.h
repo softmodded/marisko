@@ -46,6 +46,15 @@ void audio_pause(void);
 void audio_toggle(void);
 bool audio_is_playing(void);
 
+/* Skip to next (dir>0) or previous (dir<0) song. Processed by the feed thread;
+ * the song change reads the catalog (eMMC) there to avoid a bus race. */
+void audio_skip(int dir);
+
+/* Peak audio level (0..32767) held since the last call; resets on read. Source
+ * for the LED VU — the caller applies its own decay envelope at a uniform rate
+ * so the meter stays smooth while the feed thread is busy reading the eMMC. */
+uint32_t audio_level_take(void);
+
 /* Diagnostic: current playback position (relative block index into the song). */
 uint32_t audio_cur_block(void);
 
