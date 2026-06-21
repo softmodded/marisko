@@ -31,6 +31,11 @@ bool audio_running(void);
 
 /* ── ADPCM playback ─────────────────────────────────────────────────────────── */
 
+/* Tell the feed thread the catalog size + current index so it can auto-advance
+ * to the next song at end-of-song (wrapping after the last). Call before
+ * audio_load_song(). */
+void audio_set_playlist(uint16_t song_count, uint16_t current_idx);
+
 /* Set the song to play (block_start + block_count from the disk catalog).
  * Resets ADPCM state to silence; call audio_play() to start. */
 void audio_load_song(uint32_t block_start, uint32_t block_count);

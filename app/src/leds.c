@@ -1,4 +1,5 @@
 #include "leds.h"
+#include "pwm.h"
 #include "util.h"
 
 const struct led pb_leds[NUM_PB_LEDS] = {
@@ -19,15 +20,16 @@ void leds_init(void)
 	all_trk_off();
 }
 
+/* pb_leds are driven by PWM1 (so they can be dimmed). on/off = full/zero duty. */
 void all_pb_off(void)
 {
 	for (int i = 0; i < NUM_PB_LEDS; i++)
-		pb_leds[i].port->OUTCLR = (1u << pb_leds[i].pin);
+		pwm1_set_duty(i, 0);
 }
 
 void set_pb_on(int i)
 {
-	pb_leds[i].port->OUTSET = (1u << pb_leds[i].pin);
+	pwm1_set_duty(i, PWM_TOP);
 }
 
 void all_trk_off(void)

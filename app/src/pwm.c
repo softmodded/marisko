@@ -43,3 +43,41 @@ void pwm0_set_duty(int ch, uint16_t duty)
 {
 	pwm_duty[ch] = 0x8000u | duty;
 }
+
+/* ── PWM1: playback LEDs (P1.13, P0.00, P1.12, P0.01) ───────────────────────── */
+
+static uint16_t pwm1_duty[4] __attribute__((aligned(4)));
+
+void pwm1_init(void)
+{
+	NRF_PWM1->PSEL.OUT[0] = PWM_PSEL(1, 13);
+	NRF_PWM1->PSEL.OUT[1] = PWM_PSEL(0, 0);
+	NRF_PWM1->PSEL.OUT[2] = PWM_PSEL(1, 12);
+	NRF_PWM1->PSEL.OUT[3] = PWM_PSEL(0, 1);
+	NRF_PWM1->ENABLE     = (PWM_ENABLE_ENABLE_Enabled    << PWM_ENABLE_ENABLE_Pos);
+	NRF_PWM1->MODE       = (PWM_MODE_UPDOWN_Up            << PWM_MODE_UPDOWN_Pos);
+	NRF_PWM1->PRESCALER  = (PWM_PRESCALER_PRESCALER_DIV_1 << PWM_PRESCALER_PRESCALER_Pos);
+	NRF_PWM1->COUNTERTOP = PWM_TOP;
+	NRF_PWM1->DECODER    = (PWM_DECODER_LOAD_Individual   << PWM_DECODER_LOAD_Pos) |
+	                       (PWM_DECODER_MODE_RefreshCount  << PWM_DECODER_MODE_Pos);
+	NRF_PWM1->LOOP   = 0xFFFF;
+	NRF_PWM1->SHORTS = (PWM_SHORTS_LOOPSDONE_SEQSTART0_Enabled
+	                    << PWM_SHORTS_LOOPSDONE_SEQSTART0_Pos);
+
+	pwm1_duty[0] = pwm1_duty[1] = pwm1_duty[2] = pwm1_duty[3] = 0x8000;
+
+	NRF_PWM1->SEQ[0].PTR      = (uint32_t)pwm1_duty;
+	NRF_PWM1->SEQ[0].CNT      = 4;
+	NRF_PWM1->SEQ[0].REFRESH  = 0;
+	NRF_PWM1->SEQ[0].ENDDELAY = 0;
+	NRF_PWM1->SEQ[1].PTR      = (uint32_t)pwm1_duty;
+	NRF_PWM1->SEQ[1].CNT      = 4;
+	NRF_PWM1->SEQ[1].REFRESH  = 0;
+	NRF_PWM1->SEQ[1].ENDDELAY = 0;
+	NRF_PWM1->TASKS_SEQSTART[0] = 1;
+}
+
+void pwm1_set_duty(int ch, uint16_t duty)
+{
+	pwm1_duty[ch] = 0x8000u | duty;
+}

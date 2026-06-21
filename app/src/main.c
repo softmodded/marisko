@@ -53,6 +53,7 @@ int main(void)
 	leds_init();
 	saadc_init();
 	pwm0_init();
+	pwm1_init();   /* pb_leds via PWM1 (dimmable) — before any set_pb_on() */
 	usb_cdc_init();
 
 	/* eMMC init: pb_led[0] solid = success.
@@ -135,6 +136,7 @@ int main(void)
 		static disk_header_t s_dh;
 		static disk_song_entry_t s_se;
 		uint32_t song_block_start = 0, song_block_count = 0;
+		uint16_t first_song_idx = 0, total_songs = 0;
 		bool song_found = false;
 		{
 			int diag_blinks;
@@ -144,10 +146,12 @@ int main(void)
 				diag_blinks = 1;
 			} else {
 				diag_blinks = 1;
+				total_songs = s_dh.song_count;
 				for (uint16_t i = 0; i < s_dh.song_count; i++) {
 					if (disk_read_song(i, &s_se) && s_se.name[0] != '\0') {
 						diag_blinks = 2;
 						song_found = true;
+						first_song_idx   = i;
 						song_block_start = s_se.block_start;
 						song_block_count  = s_se.block_count;
 						break;
@@ -166,9 +170,10 @@ int main(void)
 		if (codec_ok && audio_init()) {
 			if (song_found) {
 				audio_set_source(AUDIO_SRC_ADPCM);
+				audio_set_playlist(total_songs, first_song_idx);
 				audio_load_song(song_block_start, song_block_count);
-				/* Start paused; play button toggles. (Boot paused keeps USB
-				 * responsive for ladder-value measurement.) */
+				/* Start paused; play button toggles. Feed thread auto-advances
+				 * to the next song at end, wrapping after the last. */
 			}
 		}
 		feed_wdt();
@@ -222,14 +227,20 @@ int main(void)
 		volup_prev = volup_now;
 		voldn_prev = voldn_now;
 
-		/* pb_leds: volume bar on change (≈1.2 s), bounce animation otherwise. */
-		all_pb_off();
+		/* pb_leds: volume bar on change (≈1.2 s), bounce animation otherwise.
+		 * Bar fills bottom→top (pb[3]=bottom) and the partial segment dims to
+		 * show the in-between level (8 levels across 4 LEDs). */
 		if (meter_ticks > 0) {
 			meter_ticks--;
-			int lit = (vol_level * NUM_PB_LEDS + 3) / 7;  /* 0..4 segments */
-			for (int i = 0; i < lit; i++)
-				set_pb_on(i);
+			int fill = vol_level * NUM_PB_LEDS * PWM_TOP / 7;  /* 0..4·TOP */
+			for (int s = 0; s < NUM_PB_LEDS; s++) {
+				int b = fill - s * PWM_TOP;
+				if (b < 0)        b = 0;
+				if (b > PWM_TOP)  b = PWM_TOP;
+				pwm1_set_duty(NUM_PB_LEDS - 1 - s, (uint16_t)b);
+			}
 		} else {
+			all_pb_off();
 			set_pb_on(pb_pos);
 			pb_pos += pb_dir;
 			if (pb_pos == NUM_PB_LEDS - 1) pb_dir = -1;

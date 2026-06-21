@@ -1,6 +1,7 @@
 #include "audio.h"
 #include "codec.h"
 #include "emmc.h"
+#include "disk.h"
 #include "util.h"
 
 #include <zephyr/device.h>
@@ -11,7 +12,7 @@
 #define CHANNELS         2u
 #define BYTES_PER_WORD   4u
 #define BLOCK_BYTES      (FRAMES_PER_BLOCK * CHANNELS * BYTES_PER_WORD)
-#define NUM_BLOCKS       16u   /* ~42 ms TX runway: absorbs bursty eMMC refills */
+#define NUM_BLOCKS       24u   /* ~64 ms TX runway: absorbs bursty eMMC refills + GC stalls */
 #define I2S_TIMEOUT_MS   200u
 
 K_MEM_SLAB_DEFINE_STATIC(s_tx_slab, BLOCK_BYTES, NUM_BLOCKS, 4);
@@ -61,6 +62,28 @@ static uint32_t s_song_block_count;
 static uint32_t s_cur_block;
 static volatile bool s_playing;
 
+/* Playlist: feed thread advances to the next catalog song at end-of-song,
+ * wrapping after the last. disk_read_song runs in the feed thread (same thread
+ * that owns the eMMC during playback) — no cross-thread bus race. */
+static uint16_t s_song_count;   /* total catalog entries */
+static uint16_t s_cur_song;     /* current catalog index */
+
+static void advance_song(void)
+{
+	if (s_song_count == 0) return;
+	disk_song_entry_t e;
+	for (uint16_t step = 1; step <= s_song_count; step++) {
+		uint16_t idx = (uint16_t)((s_cur_song + step) % s_song_count);
+		if (disk_read_song(idx, &e) && e.name[0] != '\0') {
+			s_cur_song          = idx;
+			s_song_block_start  = e.block_start;
+			s_song_block_count  = e.block_count;
+			return;
+		}
+	}
+	/* No other valid song — current one just loops (start/count unchanged). */
+}
+
 /* Prefetch: one slow bit-bang CMD17 per 128-frame buffer (~2-3 ms) can't keep
  * up with the 2.67 ms playback budget → underrun buzz. Read PREFETCH_BLOCKS at
  * once via CMD18 streaming (amortizes command overhead) and decode from RAM. */
@@ -108,6 +131,7 @@ static void fill_block(int32_t *buf)
 	if (s_source == AUDIO_SRC_ADPCM && s_playing && s_song_block_count > 0
 	    && !emmc_write_multi_active()) {
 		if (s_cur_block >= s_song_block_count) {
+			advance_song();   /* next song (wrap after last); resets state below */
 			s_cur_block = 0;
 			s_pf_pos = s_pf_count = 0;   /* force refill from block 0 */
 			for (int i = 0; i < 8; i++) { s_pred[i] = 0; s_sidx[i] = 0; }
@@ -205,23 +229,31 @@ static void feed_main(void *a, void *b, void *c)
 
 	while (1) {
 		void *blk;
+
+		/* Alloc-timeout = TX underrun (eMMC stall drained the queue) or i2s
+		 * error state. Recover and keep going — NEVER exit the thread, or audio
+		 * dies for good and play can't restart it. */
 		if (k_mem_slab_alloc(&s_tx_slab, &blk, K_MSEC(I2S_TIMEOUT_MS)) != 0) {
 			i2s_trigger(s_i2s, I2S_DIR_TX, I2S_TRIGGER_DROP);
+			/* DROP returns the queued buffers to the slab; K_FOREVER waits for
+			 * them instead of giving up. Re-prime two and restart. */
 			for (int i = 0; i < 2; i++) {
-				if (k_mem_slab_alloc(&s_tx_slab, &blk, K_MSEC(I2S_TIMEOUT_MS)) != 0) return;
+				if (k_mem_slab_alloc(&s_tx_slab, &blk, K_FOREVER) != 0) break;
 				fill_block((int32_t *)blk);
-				i2s_write(s_i2s, blk, BLOCK_BYTES);
+				if (i2s_write(s_i2s, blk, BLOCK_BYTES) != 0)
+					k_mem_slab_free(&s_tx_slab, blk);
 			}
 			i2s_trigger(s_i2s, I2S_DIR_TX, I2S_TRIGGER_START);
 			continue;
 		}
+
 		fill_block((int32_t *)blk);
 		if (i2s_write(s_i2s, blk, BLOCK_BYTES) != 0) {
 			k_mem_slab_free(&s_tx_slab, blk);
-			/* i2s_write fails when DMA isn't running (no BCLK yet or
-			 * I2S error state). Without this sleep the feed thread
-			 * tight-loops, starving the USB workqueue and main. */
-			k_sleep(K_MSEC(I2S_TIMEOUT_MS));
+			/* DMA not running (no BCLK yet or error). Drop into the recovery
+			 * path on the next iteration via a short yield. */
+			i2s_trigger(s_i2s, I2S_DIR_TX, I2S_TRIGGER_DROP);
+			k_sleep(K_MSEC(2));
 		}
 	}
 }
@@ -276,6 +308,12 @@ void audio_set_source(audio_source_t src)
 bool audio_running(void)
 {
 	return s_running;
+}
+
+void audio_set_playlist(uint16_t song_count, uint16_t current_idx)
+{
+	s_song_count = song_count;
+	s_cur_song   = current_idx;
 }
 
 void audio_load_song(uint32_t block_start, uint32_t block_count)
