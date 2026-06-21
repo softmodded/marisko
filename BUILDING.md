@@ -23,6 +23,19 @@ west update
 
 this pulls ~5-10 GB and may take some time, so be patient.
 
+## zephyr patches (required)
+
+two edits to the zephyr tree are needed for working audio + fast stem upload. apply
+them after `west update`:
+
+```
+cd zephyr
+git apply ../patches/zephyr/*.patch
+cd ..
+```
+
+see **[patches/readme.md](patches/README.md)** for what they do.
+
 ## zephyr sdk (cross-compiler)
 `(version 0.17.0 is used because that's what i had installed at the time. maybe someone should update that?)`
 
@@ -91,26 +104,31 @@ dd if=/tmp/full.bin of=build/sp1_firmware.bin bs=1 skip=131072
 
 ## flash
 
+option a — browser:
+
 1. open https://solderless.engineering → **firmware utility**
 2. upload `build/sp1_firmware.bin`
 3. works with chrome or any browser with web serial
 
+option b — [rome](https://github.com/softmodded/rome) (companion cli):
+
+```
+rome flash -p /dev/ttyACM0 build/sp1_firmware.bin
+```
+
+## uploading stems
+
+use [rome](https://github.com/softmodded/rome) to encode and upload songs (4 stereo
+stems → 8-channel IMA-ADPCM) over USB:
+
+```
+rome song add "my song" drums.flac vocals.flac bass.flac other.flac
+```
+
+see the rome readme for the udev rule that lets it run without sudo.
+
 ## project structure
 
-- `app/` — firmware source (`main.c`, cmake, kconfig)
+- `app/` — firmware source (`main.c` + modular `audio` / `codec` / `emmc` / `disk` / `usb` / `leds` / `saadc` / `pwm`)
 - `boards/arm/sp1/` — custom zephyr board definition for the sp-1
 - `build/` — build output (ignored)
-- `spire/` — renode emulator for the sp-1
-
-## emulator
-
-see **[spire](spire/README.md)** for the renode-based sp-1 hardware emulator. test firmware with virtual buttons, leds, audio visualization, and gdb debugging — no risk of bricking a real device.
-
-quick start:
-
-```
-cd spire
-./run.sh
-```
-
-this builds the firmware, launches renode, and opens the virtual device gui — all in one command.

@@ -20,6 +20,10 @@ the sp-1 has no hard reset so to get back:
 2. press any button (or plug in usb) — bootloader opens
 3. use the [solderless firmware utility](https://solderless.engineering) to flash new firmware
 
+## rome
+
+**[rome](https://github.com/softmodded/rome)** is the companion cli — flash firmware and upload/manage stems on the device over USB.
+
 ## building
 
 see **[building.md](BUILDING.md)** for setup, compilation, and flashing instructions.

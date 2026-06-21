@@ -1,158 +1,220 @@
 #include <zephyr/kernel.h>
 #include <soc.h>
 
-struct led { NRF_GPIO_Type *port; uint32_t pin; };
-static const struct led pb_leds[] = {
-	{ NRF_P1, 13 }, { NRF_P0, 0 }, { NRF_P1, 12 }, { NRF_P0, 1 },
-};
+#include "util.h"
+#include "leds.h"
+#include "saadc.h"
+#include "pwm.h"
+#include "emmc.h"
+#include "usb.h"
+#include "codec.h"
+#include "audio.h"
+#include "disk.h"
 
-static const struct led track_leds[] = {
-	{ NRF_P0, 29 }, { NRF_P0, 26 }, { NRF_P1, 15 }, { NRF_P1, 14 },
-};
-
-#define NUM_PB_LEDS   (sizeof(pb_leds) / sizeof(pb_leds[0]))
-#define NUM_TRK_LEDS  (sizeof(track_leds) / sizeof(track_leds[0]))
-
-static void all_pb_off(void)
+/* On any fatal error (incl. stack-overflow fault with HW_STACK_PROTECTION):
+ * light all 8 LEDs solid and feed the WDT forever, so a crash is visible. */
+void k_sys_fatal_error_handler(unsigned int reason, const struct arch_esf *esf)
 {
-	for (int i = 0; i < NUM_PB_LEDS; i++)
-		pb_leds[i].port->OUTCLR = (1 << pb_leds[i].pin);
+	(void)reason; (void)esf;
+	for (int i = 0; i < NUM_PB_LEDS; i++) set_pb_on(i);
+	for (int i = 0; i < 4; i++) set_trk_on(i);
+	for (;;) feed_wdt();
 }
 
-static void set_pb_on(int i)
+/* ── Power ─────────────────────────────────────────────────────────────────── */
+
+static void enter_system_off(void)
 {
-	pb_leds[i].port->OUTSET = (1 << pb_leds[i].pin);
+	all_pb_off();
+	NRF_PWM0->TASKS_STOP = 1;
+	feed_wdt();
+	NRF_POWER->RESETREAS = 0xFFFFFFFF;
+	NRF_POWER->SYSTEMOFF  = 1;
+	__DSB();
+	for (;;);
 }
 
-static void feed_wdt(void)
-{
-	for (int ch = 0; ch < 8; ch++)
-		NRF_WDT->RR[ch] = WDT_RR_RR_Reload;
-}
-
-static void delay_50ms(void)
-{
-	for (volatile uint32_t d = 0; d < 600000; d++)
-		__ASM volatile ("nop");
-}
-
-static int read_ladder(void)
-{
-	static int dead = 0;
-	if (dead) return -1;
-
-	NRF_SAADC->ENABLE = SAADC_ENABLE_ENABLE_Enabled << SAADC_ENABLE_ENABLE_Pos;
-	NRF_SAADC->RESOLUTION = SAADC_RESOLUTION_VAL_12bit << SAADC_RESOLUTION_VAL_Pos;
-	NRF_SAADC->CH[0].PSELP = SAADC_CH_PSELP_PSELP_AnalogInput0 << SAADC_CH_PSELP_PSELP_Pos;
-	NRF_SAADC->CH[0].PSELN = SAADC_CH_PSELN_PSELN_NC << SAADC_CH_PSELN_PSELN_Pos;
-	NRF_SAADC->CH[0].CONFIG =
-		(SAADC_CH_CONFIG_REFSEL_Internal << SAADC_CH_CONFIG_REFSEL_Pos) |
-		(SAADC_CH_CONFIG_GAIN_Gain1_6 << SAADC_CH_CONFIG_GAIN_Pos) |
-		(SAADC_CH_CONFIG_TACQ_10us << SAADC_CH_CONFIG_TACQ_Pos) |
-		(SAADC_CH_CONFIG_MODE_SE << SAADC_CH_CONFIG_MODE_Pos);
-
-	int16_t result = 0;
-	NRF_SAADC->RESULT.PTR = (uint32_t)&result;
-	NRF_SAADC->RESULT.MAXCNT = 1;
-
-	NRF_SAADC->TASKS_START = 1;
-	for (volatile int t = 0; t < 1000; t++) {
-		if (NRF_SAADC->EVENTS_END) break;
-	}
-	if (!NRF_SAADC->EVENTS_END) {
-		dead = 1;
-		NRF_SAADC->ENABLE = SAADC_ENABLE_ENABLE_Disabled << SAADC_ENABLE_ENABLE_Pos;
-		return -1;
-	}
-	NRF_SAADC->EVENTS_END = 0;
-
-	NRF_SAADC->TASKS_STOP = 1;
-	for (volatile int t = 0; t < 1000; t++) {
-		if (NRF_SAADC->EVENTS_STOPPED) break;
-	}
-	NRF_SAADC->EVENTS_STOPPED = 0;
-	NRF_SAADC->ENABLE = SAADC_ENABLE_ENABLE_Disabled << SAADC_ENABLE_ENABLE_Pos;
-
-	if (result < 0) result = 0;
-	return result;
-}
+/* ── Main ──────────────────────────────────────────────────────────────────── */
 
 int main(void)
 {
-	NRF_P0->PIN_CNF[27] = (GPIO_PIN_CNF_DIR_Input    << GPIO_PIN_CNF_DIR_Pos)   |
-			       (GPIO_PIN_CNF_PULL_Pullup << GPIO_PIN_CNF_PULL_Pos) |
-			       (GPIO_PIN_CNF_INPUT_Connect << GPIO_PIN_CNF_INPUT_Pos);
+	NRF_PPI->CHENCLR = 0xFFFFFFFFUL;
 
-	for (int i = 0; i < NUM_PB_LEDS; i++)
-		pb_leds[i].port->PIN_CNF[pb_leds[i].pin] =
-			(GPIO_PIN_CNF_DIR_Output   << GPIO_PIN_CNF_DIR_Pos)   |
-			(GPIO_PIN_CNF_DRIVE_S0S1 << GPIO_PIN_CNF_DRIVE_Pos) |
-			(GPIO_PIN_CNF_INPUT_Connect << GPIO_PIN_CNF_INPUT_Pos);
+	/* P1.10 = PIN_BTN_COM: power rail for button ladders and faders */
+	NRF_P1->PIN_CNF[10] = GPIO_OUT_CNF;
+	NRF_P1->OUTSET      = (1u << 10);
 
-	for (int i = 0; i < NUM_TRK_LEDS; i++)
-		track_leds[i].port->PIN_CNF[track_leds[i].pin] =
-			(GPIO_PIN_CNF_DIR_Output   << GPIO_PIN_CNF_DIR_Pos)   |
-			(GPIO_PIN_CNF_DRIVE_S0S1 << GPIO_PIN_CNF_DRIVE_Pos) |
-			(GPIO_PIN_CNF_INPUT_Connect << GPIO_PIN_CNF_INPUT_Pos);
+	/* P0.27 = function button: active-low, pull-up */
+	NRF_P0->PIN_CNF[27] =
+		(GPIO_PIN_CNF_DIR_Input     << GPIO_PIN_CNF_DIR_Pos)   |
+		(GPIO_PIN_CNF_PULL_Pullup   << GPIO_PIN_CNF_PULL_Pos)  |
+		(GPIO_PIN_CNF_INPUT_Connect << GPIO_PIN_CNF_INPUT_Pos);
 
-	all_pb_off();
-	for (int i = 0; i < NUM_TRK_LEDS; i++)
-		track_leds[i].port->OUTCLR = (1 << track_leds[i].pin);
+	leds_init();
+	saadc_init();
+	pwm0_init();
+	usb_cdc_init();
 
-	int pos = 0, dir = 1;
-
-	while (1) {
-		if (!(NRF_P0->IN & (1 << 27))) {
-			all_pb_off();
-			for (int i = 0; i < NUM_TRK_LEDS; i++)
-				track_leds[i].port->OUTCLR = (1 << track_leds[i].pin);
+	/* eMMC init: pb_led[0] solid = success.
+	 * On failure: pb_led[1] blinks N times = which init step failed (1-9). */
+	if (!emmc_init()) {
+		uint8_t step = emmc_fail_step();
+		for (;;) {
+			for (uint8_t i = 0; i < step; i++) {
+				set_pb_on(1);
+				delay_ms(200);
+				all_pb_off();
+				delay_ms(200);
+			}
+			delay_ms(1000);
 			feed_wdt();
-			NRF_POWER->RESETREAS = 0xFFFFFFFF;
-			NRF_POWER->SYSTEMOFF = 1;
-			__DSB();
-			for (;;);
 		}
+	}
 
-		int ladder = read_ladder();
-		int pressed = 0;
-		if (ladder < 100)      pressed = 0;
-		else if (ladder < 800)  pressed = 1;
-		else if (ladder < 1500) pressed = 2;
-		else if (ladder < 2200) pressed = 3;
-		else if (ladder < 3000) pressed = 4;
+	feed_wdt();
 
-		for (int i = 0; i < NUM_TRK_LEDS; i++) {
-			if (pressed == i + 1)
-				track_leds[i].port->OUTSET = (1 << track_leds[i].pin);
-			else
-				track_leds[i].port->OUTCLR = (1 << track_leds[i].pin);
+	/* Block-0 read check: all 4 leds flash twice = success, led[0] fast blink = fail. */
+	{
+		static uint8_t block0[512];
+		if (emmc_read_block(0, block0)) {
+			for (int flash = 0; flash < 2; flash++) {
+				for (int i = 0; i < NUM_PB_LEDS; i++) set_pb_on(i);
+				delay_ms(300);
+				all_pb_off();
+				delay_ms(200);
+				feed_wdt();
+			}
+		} else {
+			for (int i = 0; i < 8; i++) {
+				set_pb_on(0);
+				delay_ms(100);
+				all_pb_off();
+				delay_ms(100);
+			}
+			feed_wdt();
 		}
+	}
 
-		all_pb_off();
-		if (!pressed) set_pb_on(pos);
+	/* Cache diagnostic: 4 LEDs = cache+CMD6, 2 = cache only, 0 = no cache. */
+	{
+		feed_wdt();
+		delay_ms(500);
+		int leds = 0;
+		if (emmc_cache_size_kb() > 0) leds = emmc_cache_enabled() ? 4 : 2;
+		for (int i = 0; i < leds; i++) set_trk_on(i);
+		delay_ms(1000);
+		all_trk_off();
+		feed_wdt();
+	}
 
-		*(volatile uint32_t *)0x2000FFF0 = NRF_P0->OUT;
-		*(volatile uint32_t *)0x2000FFF4 = NRF_P1->OUT;
-		delay_50ms();
-		delay_50ms();
+	/* Audio codec bring-up. pb_led[3] solid = init clean; track[3] blink = I2C error.
+	 * Detailed register state available over USB via CODEC_DIAG (0x0B). */
+	{
+		feed_wdt();
+		bool codec_ok = codec_init();
+		feed_wdt();
+		if (codec_ok) {
+			set_pb_on(3);
+			delay_ms(600);
+			all_pb_off();
+		} else {
+			for (int i = 0; i < 4; i++) {
+				set_trk_on(3);
+				delay_ms(150);
+				all_trk_off();
+				delay_ms(150);
+			}
+		}
 		feed_wdt();
 
-		if (!pressed) {
-			pos += dir;
-			if (pos == NUM_PB_LEDS - 1) dir = -1;
-			if (pos == 0)               dir = 1;
+		/* Scan disk for first valid song BEFORE starting I2S (no concurrent DMA).
+		 * Track LED 0 blink count:
+		 *   1 = header ok but no songs
+		 *   2 = song found → will play
+		 *   3 = disk_read_header failed */
+		static disk_header_t s_dh;
+		static disk_song_entry_t s_se;
+		uint32_t song_block_start = 0, song_block_count = 0;
+		bool song_found = false;
+		{
+			int diag_blinks;
+			if (!disk_read_header(&s_dh)) {
+				diag_blinks = 3;
+			} else if (s_dh.song_count == 0) {
+				diag_blinks = 1;
+			} else {
+				diag_blinks = 1;
+				for (uint16_t i = 0; i < s_dh.song_count; i++) {
+					if (disk_read_song(i, &s_se) && s_se.name[0] != '\0') {
+						diag_blinks = 2;
+						song_found = true;
+						song_block_start = s_se.block_start;
+						song_block_count  = s_se.block_count;
+						break;
+					}
+				}
+			}
+			for (int f = 0; f < diag_blinks; f++) {
+				set_trk_on(0); delay_ms(200);
+				all_trk_off();  delay_ms(200);
+				feed_wdt();
+			}
 		}
+		feed_wdt();
 
-		if (!(NRF_P0->IN & (1 << 27))) {
-			all_pb_off();
-			for (int i = 0; i < NUM_TRK_LEDS; i++)
-				track_leds[i].port->OUTCLR = (1 << track_leds[i].pin);
-			feed_wdt();
-			NRF_POWER->RESETREAS = 0xFFFFFFFF;
-			NRF_POWER->SYSTEMOFF = 1;
-			__DSB();
-			for (;;);
+		/* Stage 2: I2S bring-up. Stage 3: ADPCM playback. */
+		if (codec_ok && audio_init()) {
+			if (song_found) {
+				audio_set_source(AUDIO_SRC_ADPCM);
+				audio_load_song(song_block_start, song_block_count);
+				/* Start paused; play button toggles. (Boot paused keeps USB
+				 * responsive for ladder-value measurement.) */
+			}
 		}
+		feed_wdt();
+	}
+
+	/* LED bounce state */
+	int pb_pos = 0;
+	int pb_dir = 1;
+
+	/* Play button on ladder 1 (AIN0): measured idle≈0, play≈1808, track1≈210.
+	 * Detect a press as a window around 1808; toggle play/pause on the edge. */
+	int play_prev = 0;
+
+	while (1) {
+		if (!(NRF_P0->IN & (1u << 27)))
+			enter_system_off();
+
+		bool uploading = usb_upload_active();
+
+		/* Play/pause button (edge-triggered). */
+		int ladder = saadc_read(1u);  /* AIN0 */
+		int play_now = (ladder >= 1650 && ladder <= 1980);
+		if (play_now && !play_prev)
+			audio_toggle();
+		play_prev = play_now;
+
+		/* pb_leds: bounce animation */
+		all_pb_off();
+		set_pb_on(pb_pos);
+
+		/* Renode mirror: expose GPIO state for emulator observation */
+		*(volatile uint32_t *)0x2000FFF0 = NRF_P0->OUT;
+		*(volatile uint32_t *)0x2000FFF4 = NRF_P1->OUT;
+
+		usb_cdc_poll();
+
+		feed_wdt();
+		if (!uploading)
+			k_msleep(30);   /* yield CPU to the feed thread between polls */
+
+		pb_pos += pb_dir;
+		if (pb_pos == NUM_PB_LEDS - 1) pb_dir = -1;
+		if (pb_pos == 0)               pb_dir =  1;
+
+		if (!(NRF_P0->IN & (1u << 27)))
+			enter_system_off();
 	}
 
 	return 0;

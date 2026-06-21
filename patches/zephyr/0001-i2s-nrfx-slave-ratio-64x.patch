@@ -1,0 +1,16 @@
+diff --git a/drivers/i2s/i2s_nrfx.c b/drivers/i2s/i2s_nrfx.c
+index 11ad955cf3c..ce9060a420c 100644
+--- a/drivers/i2s/i2s_nrfx.c
++++ b/drivers/i2s/i2s_nrfx.c
+@@ -431,6 +431,11 @@ static int i2s_nrfx_configure(const struct device *dev, enum i2s_dir dir,
+ 	} else {
+ 		nrfx_cfg.prescalers.mck_setup = NRF_I2S_MCK_DISABLED;
+ 		drv_data->request_clock = false;
++		/* SP-1: full slave (MCK disabled). The external 3.072 MHz BCLK and the
++		 * CS42L42-generated 48 kHz LRCK give 64 SCK/LRCK. The nRF I2S uses RATIO
++		 * to frame even in slave mode, so it must be 64X (default 32X desyncs
++		 * 24-bit samples → distorted audio). See SP-1-dev wiki I2S.md. */
++		nrfx_cfg.prescalers.ratio = NRF_I2S_RATIO_64X;
+ 	}
+ 
+ 	if ((i2s_cfg->options & I2S_OPT_LOOPBACK) ||

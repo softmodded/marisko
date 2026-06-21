@@ -1,0 +1,26 @@
+/*
+ * DTS overlay for SP-1 app: enables USB device controller + CDC ACM UART.
+ * CDC_ACM_SERIAL_INITIALIZE_AT_BOOT uses DT_CHOSEN(zephyr_console) to locate
+ * the CDC ACM instance to register; we point it here without enabling the
+ * Zephyr console subsystem (CONFIG_CONSOLE=n), so it is used only for our
+ * stem upload protocol.
+ */
+
+/ {
+	chosen {
+		zephyr,console = &stem_uart;
+	};
+};
+
+zephyr_udc0: &usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+
+	stem_uart: stem_uart {
+		compatible = "zephyr,cdc-acm-uart";
+		/* Large RX FIFO so the class can enqueue big multi-packet bulk-OUT
+		 * transfers (see usbd_cdc_acm.c patch) → upload throughput. */
+		rx-fifo-size = <8192>;
+		tx-fifo-size = <2048>;
+	};
+};

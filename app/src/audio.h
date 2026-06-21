@@ -1,0 +1,48 @@
+#pragma once
+
+#include <stdint.h>
+#include <stdbool.h>
+
+/*
+ * I2S audio output for the SP-1.
+ *
+ * nRF I2S0 runs as SLAVE: BCLK (3.072 MHz osc) + LRCLK (from CS42L42) are
+ * external. 24-bit SWIDTH, stereo, 48 kHz. 32-bit DMA words; sample in [31:8].
+ * A dedicated feed thread keeps the TX double-buffer primed.
+ *
+ * codec_init() must succeed (CS42L42 PLL locked) before audio_init().
+ */
+
+typedef enum {
+	AUDIO_SRC_SILENCE = 0,
+	AUDIO_SRC_TONE,        /* built-in 440 Hz sine — bring-up test */
+	AUDIO_SRC_ADPCM,       /* IMA-ADPCM from eMMC (use audio_load_song first) */
+} audio_source_t;
+
+/* Configure + start the I2S stream and spawn the feed thread.
+ * Unmutes the speaker. Returns false if the I2S device isn't ready. */
+bool audio_init(void);
+
+/* Select what the feed thread emits. */
+void audio_set_source(audio_source_t src);
+
+/* True once the I2S TX stream has actually started (START trigger succeeded). */
+bool audio_running(void);
+
+/* ── ADPCM playback ─────────────────────────────────────────────────────────── */
+
+/* Set the song to play (block_start + block_count from the disk catalog).
+ * Resets ADPCM state to silence; call audio_play() to start. */
+void audio_load_song(uint32_t block_start, uint32_t block_count);
+
+/* Play / pause / toggle. Safe to call from the main thread at any time. */
+void audio_play(void);
+void audio_pause(void);
+void audio_toggle(void);
+bool audio_is_playing(void);
+
+/* Diagnostic: current playback position (relative block index into the song). */
+uint32_t audio_cur_block(void);
+
+/* Diagnostic: µs per block of the last eMMC refill read (budget is 2670 µs). */
+uint32_t audio_last_read_us(void);

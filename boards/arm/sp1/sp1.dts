@@ -1,5 +1,6 @@
 /dts-v1/;
 #include <nordic/nrf52840_qiaa.dtsi>
+#include "sp1-pinctrl.dtsi"
 
 / {
 	model = "Teenage Engineering SP-1 Stem Player";
@@ -38,6 +39,12 @@
 	status = "disabled";
 };
 
+/* Reclaim NFC1/NFC2 (P0.09/P0.10) as GPIO — P0.09 is the TAS2505 reset line.
+ * Writes UICR->NFCPINS; takes effect after the first boot following a flash. */
+&uicr {
+	nfct-pins-as-gpios;
+};
+
 &gpio0 {
 	status = "okay";
 };
@@ -48,4 +55,20 @@
 
 &gpiote {
 	status = "okay";
+};
+
+&i2c0 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+&i2s0 {
+	compatible = "nordic,nrf-i2s";
+	status = "okay";
+	pinctrl-0 = <&i2s0_default>;
+	pinctrl-names = "default";
 };
