@@ -14,7 +14,8 @@
 #define CHANNELS         2u
 #define BYTES_PER_WORD   4u
 #define BLOCK_BYTES      (FRAMES_PER_BLOCK * CHANNELS * BYTES_PER_WORD)
-#define NUM_BLOCKS       24u   /* ~64 ms TX runway: absorbs bursty eMMC refills + GC stalls */
+#define NUM_BLOCKS       48u   /* ~128 ms TX runway: absorbs a 23 ms read burst + heavy
+                              * main-thread preemption without underrunning the I2S DMA */
 #define I2S_TIMEOUT_MS   200u
 
 K_MEM_SLAB_DEFINE_STATIC(s_tx_slab, BLOCK_BYTES, NUM_BLOCKS, 4);
@@ -71,6 +72,8 @@ static uint16_t s_song_count;     /* total catalog entries */
 static uint16_t s_cur_song;       /* current catalog index */
 static volatile int s_skip_req;   /* +1 = next, -1 = prev (rocker); 0 = none */
 
+static void lvl_setup(uint32_t block_start, uint32_t block_count);
+
 /* Move to the next valid catalog song in direction dir (+1 next, -1 prev),
  * wrapping. Runs in the feed thread (disk_read_song = eMMC). */
 static void change_song(int dir)
@@ -85,6 +88,7 @@ static void change_song(int dir)
 			s_cur_song          = (uint16_t)idx;
 			s_song_block_start  = e.block_start;
 			s_song_block_count  = e.block_count;
+			lvl_setup(e.block_start, e.block_count);
 			return;
 		}
 	}
@@ -94,12 +98,53 @@ static void change_song(int dir)
 /* Prefetch: one slow bit-bang CMD17 per 128-frame buffer (~2-3 ms) can't keep
  * up with the 2.67 ms playback budget → underrun buzz. Read PREFETCH_BLOCKS at
  * once via CMD18 streaming (amortizes command overhead) and decode from RAM. */
-#define PREFETCH_BLOCKS 16u  /* amortizes per-block CMD overhead → ~1.5 ms/block */
+#define PREFETCH_BLOCKS 64u  /* amortizes the ~7 ms fixed per-read CMD overhead. The
+                              * cost is data(~1.01 ms/blk) + 7 ms/N: N=16→1.45, N=32→
+                              * 1.23 ms/blk. The decode+write of a 4-stem block eats the
+                              * rest of the 2.67 ms budget, so cutting read/blk is the
+                              * only steady-state margin left. Bigger N is monotonically
+                              * better (N=4→2.8 ms blew the budget); deep TX queue absorbs
+                              * the longer ~40 ms burst read. */
 static uint8_t  s_pf_buf[PREFETCH_BLOCKS * 512u];
 static uint32_t s_pf_pos;    /* next block index within s_pf_buf to decode */
 static uint32_t s_pf_count;  /* valid blocks currently in s_pf_buf */
 static volatile uint32_t s_last_read_us;  /* diag: µs per block of last refill */
-static volatile int32_t  s_peak;          /* peak-hold since last read (LED VU source) */
+static volatile int32_t  s_peak;          /* peak-hold since last read (v1 LED VU fallback) */
+
+/* ── Feed-thread health counters (read via USB AUDIO_DIAG) ─────────────────── */
+static volatile uint32_t s_recoveries;    /* TX underrun recoveries (alloc timeout → DROP/START) */
+static volatile uint32_t s_write_fails;   /* i2s_write() failures */
+static volatile uint32_t s_max_read_us;   /* worst per-block eMMC read time seen (budget 2670) */
+static volatile uint32_t s_blocks_fed;    /* total blocks handed to i2s_write */
+
+/* ── Baked VU levels (disk v2) ──────────────────────────────────────────────
+ * rome bakes one level byte per LVL_DECIM audio blocks (peak >> 7, 0..255). The
+ * whole decimated array is tiny, so the feed thread loads it into RAM once at
+ * song start — no per-frame and no recurring eMMC access during playback. Main
+ * reads s_lvl_ram[cur_block / LVL_DECIM]; on a feed stall cur_block freezes so
+ * the meter holds rather than dropping out. */
+#define LVL_DECIM     16u       /* audio blocks per baked level byte — must match rome */
+#define LVL_MAX_BYTES 12288u    /* RAM cap (~8.7 min @ DECIM=16); longer songs truncate */
+
+static bool              s_lvl_enabled;   /* disk reports v2 → levels present */
+static bool              s_lvl_present;   /* current song has a level region */
+static bool              s_lvl_loaded;    /* level array read into RAM for this song */
+static uint32_t          s_lvl_start;     /* first level block of current song */
+static uint32_t          s_lvl_blocks;    /* level blocks to read (capped) */
+static uint32_t          s_lvl_count;     /* valid level bytes in s_lvl_ram */
+static uint8_t           s_lvl_ram[LVL_MAX_BYTES];
+
+/* Recompute the level region for a song from its (audio) block_start/count. */
+static void lvl_setup(uint32_t block_start, uint32_t block_count)
+{
+	s_lvl_present = s_lvl_enabled && block_count > 0;
+	s_lvl_start   = block_start + block_count;
+	uint32_t bytes = (block_count + LVL_DECIM - 1u) / LVL_DECIM;
+	if (bytes > LVL_MAX_BYTES) bytes = LVL_MAX_BYTES;
+	s_lvl_count   = bytes;
+	s_lvl_blocks  = (bytes + 511u) / 512u;
+	s_lvl_loaded  = false;
+}
 
 static int16_t adpcm_step(uint8_t nibble, int ch)
 {
@@ -155,12 +200,20 @@ static void fill_block(int32_t *buf)
 			uint32_t dt = k_cycle_get_32() - t0;
 			/* µs per block = cycles / (cyc_per_us) / n */
 			s_last_read_us = k_cyc_to_us_floor32(dt) / (n ? n : 1u);
+			if (s_last_read_us > s_max_read_us) s_max_read_us = s_last_read_us;
 			if (ok) {
 				s_pf_count = n;
 				s_pf_pos   = 0;
 			} else {
 				s_pf_count = s_pf_pos = 0;
 				goto tone_fallback;
+			}
+
+			/* Load the whole (decimated) level array into RAM once, at the
+			 * first refill of the song, while we own the bus. One-time only. */
+			if (s_lvl_present && !s_lvl_loaded) {
+				if (emmc_read_blocks(s_lvl_start, s_lvl_ram, s_lvl_blocks))
+					s_lvl_loaded = true;
 			}
 		}
 
@@ -182,9 +235,12 @@ static void fill_block(int32_t *buf)
 					l += adpcm_step(nl, stem * 2);
 					r += adpcm_step(nr, stem * 2 + 1);
 				}
-				/* Divide by 2 (not 4) for better volume while still avoiding clip */
-				l >>= 1;
-				r >>= 1;
+				/* Average 4 stems (>>2): sum of four ±32767 values is ±131068,
+				 * so >>2 → ±32767 max and NEVER clips. The old >>1 clipped hard
+				 * whenever 2+ stems were loud → constant crunch/clicks. Make up
+				 * the 6 dB with the speaker volume. Clamp kept as a safety net. */
+				l >>= 2;
+				r >>= 2;
 				if (l >  32767) l =  32767;
 				if (l < -32768) l = -32768;
 				if (r >  32767) r =  32767;
@@ -253,14 +309,19 @@ static void feed_main(void *a, void *b, void *c)
 		 * error state. Recover and keep going — NEVER exit the thread, or audio
 		 * dies for good and play can't restart it. */
 		if (k_mem_slab_alloc(&s_tx_slab, &blk, K_MSEC(I2S_TIMEOUT_MS)) != 0) {
+			s_recoveries++;
 			i2s_trigger(s_i2s, I2S_DIR_TX, I2S_TRIGGER_DROP);
-			/* DROP returns the queued buffers to the slab; K_FOREVER waits for
-			 * them instead of giving up. Re-prime two and restart. */
-			for (int i = 0; i < 2; i++) {
+			/* DROP returns all queued buffers to the slab. Re-prime the FULL
+			 * queue (not just 2) before restarting — a shallow re-prime drains
+			 * before the next ~20 ms eMMC prefetch read completes and underruns
+			 * again, cascading. Full runway lets a transient underrun self-heal. */
+			for (int i = 0; i < (int)NUM_BLOCKS - 1; i++) {
 				if (k_mem_slab_alloc(&s_tx_slab, &blk, K_FOREVER) != 0) break;
 				fill_block((int32_t *)blk);
-				if (i2s_write(s_i2s, blk, BLOCK_BYTES) != 0)
+				if (i2s_write(s_i2s, blk, BLOCK_BYTES) != 0) {
 					k_mem_slab_free(&s_tx_slab, blk);
+					break;
+				}
 			}
 			i2s_trigger(s_i2s, I2S_DIR_TX, I2S_TRIGGER_START);
 			continue;
@@ -268,11 +329,14 @@ static void feed_main(void *a, void *b, void *c)
 
 		fill_block((int32_t *)blk);
 		if (i2s_write(s_i2s, blk, BLOCK_BYTES) != 0) {
+			s_write_fails++;
 			k_mem_slab_free(&s_tx_slab, blk);
 			/* DMA not running (no BCLK yet or error). Drop into the recovery
 			 * path on the next iteration via a short yield. */
 			i2s_trigger(s_i2s, I2S_DIR_TX, I2S_TRIGGER_DROP);
 			k_sleep(K_MSEC(2));
+		} else {
+			s_blocks_fed++;
 		}
 	}
 }
@@ -304,9 +368,18 @@ bool audio_init(void)
 	/* Preemptible, lower priority than main (prio 0) so main's button poll
 	 * (saadc_read) and the USB stack preempt the feed cleanly. Audio still gets
 	 * ~93% CPU since main only runs briefly each tick. */
+	/* Cooperative priority (just above the preemptible main thread). Audio is
+	 * hard-realtime: the per-block decode+read already nearly fills the 2.67 ms
+	 * budget, so any preemption by main (prio 0: button SAADC poll, LED PWM, USB
+	 * poll) pushed feed below the 375 blk/s consume rate → the TX queue drained →
+	 * continuous underruns (clicks/stutters) no TX-queue depth could absorb. As a
+	 * coop thread, feed runs whenever runnable and is never preempted by main;
+	 * its blocking alloc/i2s_write calls are reschedule points so main (WDT feed,
+	 * buttons) still runs between bursts. Buttons sample up to one ~40 ms read
+	 * later — imperceptible. */
 	k_thread_create(&s_feed_thread, s_feed_stack, FEED_STACK,
 			feed_main, NULL, NULL, NULL,
-			K_PRIO_PREEMPT(5), K_FP_REGS, K_NO_WAIT);
+			K_PRIO_COOP(CONFIG_NUM_COOP_PRIORITIES - 1), K_FP_REGS, K_NO_WAIT);
 	k_thread_name_set(&s_feed_thread, "i2s_feed");
 
 	k_sleep(K_MSEC(20));
@@ -343,18 +416,29 @@ void audio_load_song(uint32_t block_start, uint32_t block_count)
 	s_cur_block        = 0;
 	s_pf_pos = s_pf_count = 0;
 	for (int i = 0; i < 8; i++) { s_pred[i] = 0; s_sidx[i] = 0; }
+	lvl_setup(block_start, block_count);
 }
+
+void audio_set_levels_enabled(bool enabled) { s_lvl_enabled = enabled; }
 
 void audio_play(void)  { s_playing = true; }
 void audio_pause(void) { s_playing = false; }
 void audio_skip(int dir) { s_skip_req = (dir < 0) ? -1 : 1; }
 
-/* Return the peak held since the last call, and reset the accumulator. */
-uint32_t audio_level_take(void)
+/* VU level (0..255) for the LED meter at the current playback position. */
+uint32_t audio_vu_level(void)
 {
+	if (s_lvl_present) {
+		if (!s_lvl_loaded || s_lvl_count == 0) return 0;
+		uint32_t idx = s_cur_block / LVL_DECIM;
+		if (idx >= s_lvl_count) idx = s_lvl_count - 1u;
+		return s_lvl_ram[idx];
+	}
+	/* v1 fallback: on-device peak-hold (0..32767), scaled to 0..255. */
 	int32_t v = s_peak;
 	s_peak = 0;
-	return (uint32_t)v;
+	v >>= 7;
+	return (uint32_t)(v > 255 ? 255 : v);
 }
 
 void audio_toggle(void) { s_playing = !s_playing; }
@@ -362,5 +446,17 @@ void audio_toggle(void) { s_playing = !s_playing; }
 uint32_t audio_cur_block(void) { return s_cur_block; }
 
 uint32_t audio_last_read_us(void) { return s_last_read_us; }
+
+void audio_get_diag(audio_diag_t *d)
+{
+	if (!d) return;
+	d->recoveries  = s_recoveries;
+	d->write_fails = s_write_fails;
+	d->max_read_us = s_max_read_us;
+	d->last_read_us = s_last_read_us;
+	d->cur_block   = s_cur_block;
+	d->blocks_fed  = s_blocks_fed;
+	d->crc_errors  = emmc_crc_errors();
+}
 
 bool audio_is_playing(void) { return s_playing; }

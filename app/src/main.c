@@ -103,6 +103,7 @@ int main(void)
 		if (song_found) {
 			audio_set_source(AUDIO_SRC_ADPCM);
 			audio_set_playlist(total_songs, first_song_idx);
+			audio_set_levels_enabled(s_dh.version >= 2);  /* baked VU on v2 discs */
 			audio_load_song(song_block_start, song_block_count);
 		}
 	}
@@ -125,7 +126,7 @@ int main(void)
 
 	/* Audio VU: reference for a full 4-bar bar (higher = less sensitive) and a
 	 * displayed envelope with instant attack + smooth time-based decay. */
-	const int VU_REF = 22000;
+	const int VU_REF = 171;   /* baked level 0..255 that fills 4 bars (≈22000>>7) */
 	int vu_disp = 0;
 	codec_speaker_volume(vol_r46[vol_level]);
 
@@ -174,13 +175,13 @@ int main(void)
 			meter_ticks--;
 			fill = vol_level * NUM_PB_LEDS * PWM_TOP / 7;   /* 0..4·TOP */
 		} else if (playing) {
-			/* Instant attack, smooth decay (per loop) → smooth bounce, no freeze
-			 * even while the feed thread is mid eMMC read. */
-			int target = (int)audio_level_take();
-			if (target > vu_disp) vu_disp = target;
-			else                  vu_disp -= vu_disp / 6;
-			fill = (int)((int64_t)vu_disp * (NUM_PB_LEDS * PWM_TOP) / VU_REF);
-			if (fill > NUM_PB_LEDS * PWM_TOP) fill = NUM_PB_LEDS * PWM_TOP;
+			/* Baked level (0..255) for the current block → target fill, with a
+			 * light one-pole for smooth motion. */
+			int lvl    = (int)audio_vu_level();
+			int target = lvl * (NUM_PB_LEDS * PWM_TOP) / VU_REF;
+			if (target > NUM_PB_LEDS * PWM_TOP) target = NUM_PB_LEDS * PWM_TOP;
+			vu_disp += (target - vu_disp) / 2;
+			fill = vu_disp;
 		} else {
 			vu_disp = 0;
 			fill = 0;

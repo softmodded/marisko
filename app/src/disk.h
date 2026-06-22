@@ -27,7 +27,7 @@
  */
 
 #define DISK_MAGIC              0x53503146u  /* "SP1F" little-endian */
-#define DISK_VERSION            1u
+#define DISK_VERSION            2u           /* v2: per-block baked VU levels appended after audio */
 
 #define DISK_HEADER_BLOCK       0u
 #define DISK_CATALOG_START      1u           /* first catalog block */

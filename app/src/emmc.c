@@ -558,6 +558,10 @@ bool emmc_read_block(uint32_t block_addr, uint8_t *buf)
 	return read_block_single(block_addr, buf);
 }
 
+static volatile uint32_t s_crc_errors;   /* read-CRC16 mismatches (corrupt bit-bang reads) */
+
+uint32_t emmc_crc_errors(void) { return s_crc_errors; }
+
 bool emmc_read_blocks(uint32_t block_addr, uint8_t *buf, uint32_t num_blocks)
 {
 	if (!g_initialized || !buf || num_blocks == 0) return false;
@@ -565,18 +569,31 @@ bool emmc_read_blocks(uint32_t block_addr, uint8_t *buf, uint32_t num_blocks)
 	if (num_blocks == 1) return read_block_single(block_addr, buf);
 
 	uint8_t resp[6];
-	if (!send_command(18, block_addr, resp, 48, true))
-		return false;
 
-	for (uint32_t i = 0; i < num_blocks; i++) {
-		if (!wait_for_data_start()) goto fail;
-		read_bytes_bitbang(buf + i * 512u, 512);
-		for (int j = 0; j < 16; j++) fast_clock_pulse(); /* drain 2 CRC bytes */
+	/* Verify each block's CRC16 (was drained unchecked → silent bit errors
+	 * decoded to audible clicks). On any mismatch, re-read the whole batch.
+	 * After 3 tries, return best-effort so playback continues (one click beats
+	 * a stall). The CRC16 follows the 512 data bytes, MSB byte first. */
+	for (int attempt = 0; attempt < 3; attempt++) {
+		if (!send_command(18, block_addr, resp, 48, true))
+			return false;
+
+		bool crc_ok = true;
+		for (uint32_t i = 0; i < num_blocks; i++) {
+			if (!wait_for_data_start()) goto fail;
+			uint8_t *blk = buf + i * 512u;
+			read_bytes_bitbang(blk, 512);
+			uint8_t c[2];
+			read_bytes_bitbang(c, 2);   /* CRC16, MSB byte first */
+			uint16_t got = ((uint16_t)c[0] << 8) | (uint16_t)c[1];
+			if (got != crc16(blk, 512)) { crc_ok = false; s_crc_errors++; }
+		}
+
+		for (int i = 0; i < 16; i++) clock_pulse();
+		cmd12_stop();
+		if (crc_ok) return true;
 	}
-
-	for (int i = 0; i < 16; i++) clock_pulse();
-	cmd12_stop();
-	return true;
+	return true;   /* exhausted retries; data is best-effort */
 
 fail:
 	cmd12_stop();

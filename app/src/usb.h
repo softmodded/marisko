@@ -41,6 +41,7 @@
 #define USB_CMD_READ_BLOCK      0x0Cu  /* block_addr[4 LE] → OK + data[512] (pauses audio) */
 #define USB_CMD_WRITE_PROBE     0x0Du  /* block_addr[4 LE] → OK + result[1] (0=wfail 1=rfail 2=mismatch 3=ok); DESTRUCTIVE */
 #define USB_CMD_WRITE_STRESS    0x0Eu  /* count[4 LE] → OK + first_fail[4 LE] (0xFFFFFFFF=all ok); DESTRUCTIVE */
+#define USB_CMD_AUDIO_DIAG      0x0Fu  /* no payload → OK + audio_diag_t (6×u32 LE) feed-thread health */
 
 #define USB_STATUS_OK         0x00u
 #define USB_STATUS_ERR        0xFFu

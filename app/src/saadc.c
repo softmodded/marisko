@@ -34,9 +34,14 @@ int saadc_read(uint32_t pselp)
 	NRF_SAADC->RESULT.MAXCNT = 1;
 	adc_result = 0;
 
+	/* Spin caps bound how long this prio-0 poll can busy-wait when a SAADC event
+	 * never fires (errata/idle): worst case was ~34 ms/read × 2 ladders = ~68 ms,
+	 * exceeding the I2S feed thread's ~61 ms TX runway → underrun → audio cuts.
+	 * A real 12-bit/TACQ=10µs conversion completes in <2000 iters, so 50000 is
+	 * 25× margin yet caps a failed read to ~3 ms. */
 	NRF_SAADC->EVENTS_STARTED = 0;
 	NRF_SAADC->TASKS_START    = 1;
-	for (volatile int t = 0; t < 200000; t++)
+	for (volatile int t = 0; t < 50000; t++)
 		if (NRF_SAADC->EVENTS_STARTED) break;
 	if (!NRF_SAADC->EVENTS_STARTED) { saadc_reset(); return -1; }
 	NRF_SAADC->EVENTS_STARTED = 0;
@@ -44,7 +49,7 @@ int saadc_read(uint32_t pselp)
 	NRF_SAADC->EVENTS_END   = 0;
 	NRF_SAADC->TASKS_SAMPLE = 1;
 	__DSB();
-	for (volatile int t = 0; t < 400000; t++)
+	for (volatile int t = 0; t < 50000; t++)
 		if (NRF_SAADC->EVENTS_END) break;
 	if (!NRF_SAADC->EVENTS_END) { saadc_reset(); return -1; }
 	NRF_SAADC->EVENTS_END = 0;

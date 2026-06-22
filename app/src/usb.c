@@ -103,7 +103,8 @@ typedef struct {
 	bool     multi_begun;  /* CMD25 session is open */
 	uint16_t song_idx;
 	uint32_t block_start;
-	uint32_t blocks_expected;
+	uint32_t blocks_expected;   /* audio + level blocks (total streamed) */
+	uint32_t audio_blocks;      /* audio-only count → catalog block_count */
 	uint32_t blocks_written;
 	uint32_t session_left;   /* blocks remaining in the current CMD25 chunk */
 } upload_t;
@@ -198,6 +199,14 @@ static void handle_write_stress(const uint8_t *payload, uint32_t plen)
 	send_ok(r, 4);
 }
 
+/* 0x0F AUDIO_DIAG: no payload → audio_diag_t (6 × u32 LE). Feed-thread health. */
+static void handle_audio_diag(void)
+{
+	audio_diag_t d;
+	audio_get_diag(&d);
+	send_ok((const uint8_t *)&d, sizeof(d));
+}
+
 static void handle_codec_diag(void)
 {
 	/* Returns the snapshot captured at boot — no live I2C here, because a TWIM
@@ -241,7 +250,9 @@ static void handle_disk_format(void)
 	send_ok(NULL, 0);
 }
 
-/* 0x04 SONG_BEGIN: name[24] + nblocks[4] = 28 bytes → song_idx[2 LE] */
+/* 0x04 SONG_BEGIN: name[24] + audio_blocks[4] (+ lvl_blocks[4], v2) → song_idx[2 LE].
+ * Total stream = audio + level blocks; catalog records audio_blocks, the level
+ * region follows at block_start + audio_blocks. 28-byte payload → lvl_blocks=0. */
 static void handle_song_begin(const uint8_t *payload, uint32_t plen)
 {
 	if (plen < 28) { send_err(); return; }
@@ -251,12 +262,18 @@ static void handle_song_begin(const uint8_t *payload, uint32_t plen)
 	/* Pause audio so feed thread stops issuing CMD17 reads during disk ops */
 	audio_pause();
 
+	uint32_t audio_blocks = (uint32_t)payload[24]        | ((uint32_t)payload[25] << 8) |
+	                        ((uint32_t)payload[26] << 16) | ((uint32_t)payload[27] << 24);
+	uint32_t lvl_blocks = 0;
+	if (plen >= 32)
+		lvl_blocks = (uint32_t)payload[28]        | ((uint32_t)payload[29] << 8) |
+		             ((uint32_t)payload[30] << 16) | ((uint32_t)payload[31] << 24);
+
 	disk_song_entry_t entry = {0};
 	for (int i = 0; i < 24; i++) entry.name[i] = (char)payload[i];
 	entry.name[23]    = '\0';
 	entry.block_start = g_hdr.next_free_block;
-	entry.block_count = (uint32_t)payload[24]        | ((uint32_t)payload[25] << 8) |
-	                    ((uint32_t)payload[26] << 16) | ((uint32_t)payload[27] << 24);
+	entry.block_count = audio_blocks;
 
 	uint16_t idx = disk_add_song(&g_hdr, &entry);
 	if (idx == 0xFFFFu) { send_err(); return; }
@@ -268,7 +285,8 @@ static void handle_song_begin(const uint8_t *payload, uint32_t plen)
 	g_upload.multi_begun     = false;
 	g_upload.song_idx        = idx;
 	g_upload.block_start     = g_hdr.next_free_block;
-	g_upload.blocks_expected = entry.block_count;
+	g_upload.blocks_expected = audio_blocks + lvl_blocks;
+	g_upload.audio_blocks    = audio_blocks;
 	g_upload.blocks_written  = 0;
 
 	uint8_t resp[2] = { (uint8_t)(idx & 0xFFu), (uint8_t)(idx >> 8) };
@@ -344,13 +362,14 @@ static void handle_song_commit(void)
 		g_upload.multi_begun = false;
 	}
 
-	/* Update catalog entry with actual block_count */
+	/* Catalog records audio blocks only; the level region follows at
+	 * block_start + block_count. next_free jumps past audio + levels. */
 	disk_song_entry_t entry;
 	if (!disk_read_song(g_upload.song_idx, &entry)) { send_err(); return; }
-	entry.block_count = g_upload.blocks_written;
+	entry.block_count = g_upload.audio_blocks;
 	if (!disk_write_song(g_upload.song_idx, &entry)) { send_err(); return; }
 
-	/* Advance next_free_block */
+	/* Advance next_free_block past everything written (audio + levels) */
 	g_hdr.next_free_block = g_upload.block_start + g_upload.blocks_written;
 	g_upload.active = false;
 
@@ -402,6 +421,7 @@ static void dispatch(uint8_t cmd, const uint8_t *payload, uint32_t plen)
 	case USB_CMD_READ_BLOCK:      handle_read_block(payload, plen);     break;
 	case USB_CMD_WRITE_PROBE:     handle_write_probe(payload, plen);    break;
 	case USB_CMD_WRITE_STRESS:    handle_write_stress(payload, plen);   break;
+	case USB_CMD_AUDIO_DIAG:      handle_audio_diag();                  break;
 	default:                      send_err();                          break;
 	}
 }

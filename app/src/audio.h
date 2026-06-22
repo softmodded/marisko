@@ -36,6 +36,13 @@ bool audio_running(void);
  * audio_load_song(). */
 void audio_set_playlist(uint16_t song_count, uint16_t current_idx);
 
+/* Enable baked per-block VU levels (disk v2). The level array (one decimated
+ * byte per LVL_DECIM audio blocks) follows each song's audio at
+ * block_start + block_count; the feed thread loads it into RAM once at song
+ * start. Disable for v1 discs → falls back to on-device peak. Call before
+ * audio_load_song(). */
+void audio_set_levels_enabled(bool enabled);
+
 /* Set the song to play (block_start + block_count from the disk catalog).
  * Resets ADPCM state to silence; call audio_play() to start. */
 void audio_load_song(uint32_t block_start, uint32_t block_count);
@@ -50,13 +57,28 @@ bool audio_is_playing(void);
  * the song change reads the catalog (eMMC) there to avoid a bus race. */
 void audio_skip(int dir);
 
-/* Peak audio level (0..32767) held since the last call; resets on read. Source
- * for the LED VU — the caller applies its own decay envelope at a uniform rate
- * so the meter stays smooth while the feed thread is busy reading the eMMC. */
-uint32_t audio_level_take(void);
+/* Current VU level (0..255) for the LED meter, indexed by playback position.
+ * With baked levels (disk v2) this reads the precomputed level for the block
+ * being decoded from RAM (loaded once at song start) — no per-frame eMMC. Falls
+ * back to on-device peak-hold on v1 discs. Caller applies light smoothing. */
+uint32_t audio_vu_level(void);
 
 /* Diagnostic: current playback position (relative block index into the song). */
 uint32_t audio_cur_block(void);
 
 /* Diagnostic: µs per block of the last eMMC refill read (budget is 2670 µs). */
 uint32_t audio_last_read_us(void);
+
+/* Feed-thread health snapshot (USB AUDIO_DIAG). recoveries/write_fails > 0 means
+ * the I2S TX queue underran; max_read_us > 2670 means an eMMC read missed the
+ * realtime budget. blocks_fed should climb steadily during playback. */
+typedef struct {
+	uint32_t recoveries;
+	uint32_t write_fails;
+	uint32_t max_read_us;
+	uint32_t last_read_us;
+	uint32_t cur_block;
+	uint32_t blocks_fed;
+	uint32_t crc_errors;   /* corrupt eMMC reads caught by CRC16 (mirror of emmc_crc_errors) */
+} audio_diag_t;
+void audio_get_diag(audio_diag_t *d);

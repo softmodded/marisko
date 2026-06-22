@@ -48,6 +48,9 @@ bool emmc_read_blocks(uint32_t block_addr, uint8_t *buf, uint32_t num_blocks);
 /* Total capacity in 512-byte blocks (valid after emmc_init succeeds). */
 uint32_t emmc_capacity_blocks(void);
 
+/* Count of read-CRC16 mismatches seen by emmc_read_blocks (corrupt reads). */
+uint32_t emmc_crc_errors(void);
+
 /* Write cache size in KiB from EXT_CSD[168..171]; 0 = no cache on this card. */
 uint32_t emmc_cache_size_kb(void);
 
