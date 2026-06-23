@@ -482,6 +482,9 @@ uint32_t audio_cur_block(void) { return s_cur_block; }
 
 uint32_t audio_last_read_us(void) { return s_last_read_us; }
 
+static volatile uint16_t s_dbg_ain0;
+void audio_dbg_set_ain0(uint16_t v) { s_dbg_ain0 = v; }
+
 void audio_get_diag(audio_diag_t *d)
 {
 	if (!d) return;
@@ -492,6 +495,7 @@ void audio_get_diag(audio_diag_t *d)
 	d->cur_block   = s_cur_block;
 	d->blocks_fed  = s_blocks_fed;
 	d->crc_errors  = emmc_crc_errors();
+	d->ain0        = s_dbg_ain0;
 }
 
 bool audio_is_playing(void) { return s_playing; }

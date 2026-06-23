@@ -52,6 +52,25 @@ static void hp_apply_level(int lvl)
 	}
 }
 
+/* Decode the AIN0 track-button ladder into a bitmask of held stems (bit s = stem
+ * s). Measured on-device: singles + all pairs are distinct, gaps ≥80 counts, so
+ * a ±50 nearest-match is unambiguous. Triples/quad are unmeasured → return 0
+ * (no solo) rather than a wrong guess. Returns 0 for idle / Play / unknown. */
+static uint8_t track_mask(int al)
+{
+	static const struct { int16_t v; uint8_t m; } tbl[] = {
+		{ 207, 0x1 }, { 401, 0x2 }, { 576, 0x3 }, { 725, 0x4 }, { 860, 0x5 },
+		{ 981, 0x6 }, { 1211, 0x8 }, { 1307, 0x9 }, { 1390, 0xA }, { 1547, 0xC },
+	};
+	if (al < 120) return 0;
+	for (unsigned i = 0; i < sizeof(tbl) / sizeof(tbl[0]); i++) {
+		int d = al - tbl[i].v;
+		if (d < 0) d = -d;
+		if (d <= 50) return tbl[i].m;
+	}
+	return 0;
+}
+
 /* ── Stem faders ─────────────────────────────────────────────────────────────
  * The faders drive per-stem mix gain and must respond in real time. The audio
  * feed thread is cooperative and spends ~40% of wall-clock in long bit-bang
@@ -68,6 +87,13 @@ static void hp_apply_level(int lvl)
  * them to render the pb-LED meter. */
 static volatile int s_vol_level   = 3;   /* current 0..7 volume level */
 static volatile int s_meter_ticks = 0;   /* >0 = show the volume bar (UI counts down) */
+
+/* Stem on/off (track-button tap) + momentary solo (track-button hold), folded
+ * into the fader gains by the UI thread. s_solo_mask: 0 = no solo, else a bit
+ * per stem that is currently soloed (only those play). Multiple stems can be
+ * muted at once (independent taps). */
+static volatile uint8_t s_stem_muted[4] = {0, 0, 0, 0};
+static volatile uint8_t s_solo_mask = 0;
 
 K_THREAD_STACK_DEFINE(s_ui_stack, 1024);
 static struct k_thread s_ui_thread;
@@ -94,6 +120,13 @@ static void ui_main(void *a, void *b, void *c)
 
 	uint16_t gains[4] = {256, 256, 256, 256};
 	int fi = 0;
+	/* Track-button state (sensed here at 125 Hz so quick taps aren't dropped).
+	 * Tap = toggle the held stem(s); hold >250 ms = solo them until release.
+	 * Both work with multiple buttons at once (see track_mask). */
+	bool    trk_held    = false;  /* any track button down */
+	bool    trk_soloed  = false;  /* this hold has activated solo */
+	uint8_t trk_last    = 0;      /* last non-zero held mask (for tap-toggle) */
+	int64_t trk_press_ms = 0;
 
 	while (1) {
 		/* Faders → per-stem mix gain. Sample ONE fader per tick (round-robin):
@@ -108,7 +141,35 @@ static void ui_main(void *a, void *b, void *c)
 			gains[fi] = (uint16_t)t;
 		}
 		fi = (fi + 1) & 3;
-		audio_set_stem_gains(gains);
+
+		/* Track buttons on AIN0 → bitmask of held stems. Tap toggles them; a
+		 * hold >250 ms solos them, and the solo set follows the held buttons
+		 * live (add/remove a finger to change it). */
+		uint8_t cur = track_mask(saadc_read(1u));
+		if (cur) {
+			if (!trk_held) { trk_press_ms = k_uptime_get(); trk_soloed = false; trk_held = true; }
+			trk_last = cur;
+			if (!trk_soloed && k_uptime_get() - trk_press_ms > 250) trk_soloed = true;
+			if (trk_soloed) s_solo_mask = cur;          /* live solo of the held set */
+		} else if (trk_held) {                              /* all released */
+			if (trk_soloed) {
+				s_solo_mask = 0;
+			} else {
+				for (int s = 0; s < 4; s++)
+					if (trk_last & (1u << s)) s_stem_muted[s] ^= 1u;
+			}
+			trk_held = false;
+		}
+
+		/* Fold in stem on/off + solo: while any stem is soloed, only soloed stems
+		 * play; otherwise muted stems are silenced. Fader gain is the base. */
+		uint16_t eff[4];
+		uint8_t solo = s_solo_mask;
+		for (int s = 0; s < 4; s++) {
+			if (solo)  eff[s] = (solo & (1u << s)) ? gains[s] : 0;
+			else       eff[s] = s_stem_muted[s] ? 0 : gains[s];
+		}
+		audio_set_stem_gains(eff);
 
 		bool playing = audio_is_playing();
 
@@ -281,10 +342,13 @@ int main(void)
 
 		/* Play/pause button (edge-triggered) on ladder 1 (AIN0). */
 		int ladder = saadc_read(1u);  /* AIN0 */
+		audio_dbg_set_ain0((uint16_t)ladder);   /* expose for threshold tuning via rome audio */
 		int play_now = (ladder >= 1650 && ladder <= 1980);
 		if (play_now && !play_prev)
 			audio_toggle();
 		play_prev = play_now;
+		/* Track buttons (same AIN0 ladder) are sensed in the UI thread so quick
+		 * taps aren't dropped while main is starved during eMMC reads. */
 
 		/* Ladder 2 (AIN1): prev≈399, vol-≈729, next≈1207, vol+≈1806. */
 		int vladder = saadc_read(2u);  /* AIN1 */

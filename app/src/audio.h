@@ -90,5 +90,9 @@ typedef struct {
 	uint32_t cur_block;
 	uint32_t blocks_fed;
 	uint32_t crc_errors;   /* corrupt eMMC reads caught by CRC16 (mirror of emmc_crc_errors) */
+	uint32_t ain0;         /* last raw AIN0 (track+play button ladder) — for tuning thresholds */
 } audio_diag_t;
 void audio_get_diag(audio_diag_t *d);
+
+/* Publish the latest raw AIN0 ladder reading for the diag (called from main). */
+void audio_dbg_set_ain0(uint16_t v);
