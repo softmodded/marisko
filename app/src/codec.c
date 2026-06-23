@@ -48,8 +48,14 @@
 #define CS_ASP_RX_CH1_RES  0x2A02u
 #define CS_ASP_RX_CH2_RES  0x2A05u
 #define CS_FINAL_HP_VOL    0x1F06u
+#define CS_OSC_SW_STATUS   0x1109u   /* oscillator switch status; 0x02 = SCLK→MCLK */
+#define CS_DETECT_STATUS1  0x1B77u   /* bit7 = headphone connected (stock detect) */
 
-#define CS_HP_CTL_MUTED    0x0Eu
+/* HP_CTL (0x2001) per the stock TKT-wiki sequence (the one that actually plays
+ * audio): 0x0D = mute all, 0x01 = unmute headphones. (The sp1-midi driver's
+ * 0x0E/0x02 hold a different control bit and produce no output here.) */
+#define CS_HP_CTL_MUTED    0x0Du
+#define CS_HP_CTL_UNMUTED  0x01u
 
 struct cs_rw { uint16_t reg; uint8_t val; };
 
@@ -58,7 +64,10 @@ static const struct cs_rw cs_pre_power[] = {
 };
 static const struct cs_rw cs_main[] = {
 	{CS_PLL_CTL3,      0x10},
-	{CS_PLL_DIV_FRAC2, 0x00},
+	{CS_PLL_DIV_FRAC2, 0x80},   /* stock TKT-wiki value; sp1-midi's 0x00 locked the
+	                            * PLL to a slightly-off freq so the MCLK never
+	                            * switched off the RCO (0x1109 stuck at 0x00) →
+	                            * headphone DAC clocked by RCO → clicks/stutter. */
 	{CS_PLL_DIV_INT,   0x3E},
 	{CS_PLL_CAL_RATIO, 0x7D},
 	{CS_MCLK_CTL,      0x00},
@@ -86,13 +95,15 @@ static const struct cs_rw cs_route[] = {
 	{CS_MIXER_CHB_VOL,  0x00},
 	{CS_PWR_CTL1,       0x96},
 	{CS_CODEC_CTL,      0x41},
-	{CS_MIC_DET_CTL1,   0x8F},
+	{CS_MIC_DET_CTL1,   0x9F},
 	{CS_HS_CLAMP_DIS,   0x01},
 	{CS_HP_CTL,         CS_HP_CTL_MUTED},
 };
 static const struct cs_rw cs_final[] = {
 	{CS_FINAL_HP_VOL,  0x86},
-	{CS_TIPSENSE_CTL,  0xC2},
+	{CS_TIPSENSE_CTL,  0xC0},   /* bits[1:0]=00: no HW tip-sense debounce (was 0x02
+	                            * ≈ 500 ms, the plug/unplug lag). Software debounce
+	                            * (2 jack reads ≈ 36 ms) handles mechanical bounce. */
 };
 
 /* ── TAS2505 init script (page, reg, val) ───────────────────────────────────── */
@@ -204,6 +215,17 @@ static bool cs42l42_bringup(void)
 	ok = cs_run(cs_main, ARRAY_SIZE(cs_main)) && ok;
 	delay_ms(1);
 	ok = cs_run(cs_post_power, ARRAY_SIZE(cs_post_power)) && ok;
+
+	/* After PWR_CTL7 (oscillator switch control), wait for the codec to switch
+	 * its internal MCLK over to SCLK before configuring the serial port. Stock
+	 * power-up (TKT wiki, CS42L42 datasheet p.94) polls 0x1109 until 0x02; the
+	 * DAC clock domain isn't ready until this completes (skipping it leaves the
+	 * headphone DAC unclocked → silent). Bounded retries so we never hang. */
+	for (int i = 0; i < 10; i++) {
+		uint8_t sw = 0;
+		if (cs_read(CS_OSC_SW_STATUS, &sw) && sw == 0x02) break;
+		delay_ms(1);
+	}
 
 	/* Start the playback clock tree (this is what makes LRCLK appear). */
 	ok = cs_run(cs_route, ARRAY_SIZE(cs_route)) && ok;
@@ -317,10 +339,38 @@ bool codec_speaker_volume(uint8_t vol)
 	return tas_write(1, 46, vol);
 }
 
+bool codec_headphone_mute(bool mute)
+{
+	s_cs_page = -1;
+	return cs_write(CS_HP_CTL, mute ? CS_HP_CTL_MUTED : CS_HP_CTL_UNMUTED);
+}
+
+bool codec_headphone_volume(uint8_t vol)
+{
+	/* Digital mixer input volume (CS42L42 MIXER_CHA/CHB_VOL, 6-bit two's-comp:
+	 * 0x00 = 0 dB, 0x3F = -1 dB … i.e. larger = quieter). NOTE: 0x2601/0x2609
+	 * are the SRC sample-rate regs in the stock config, NOT volume — must stay
+	 * 0x4C — so headphone level is controlled here at the mixer instead. */
+	s_cs_page = -1;
+	return cs_write(CS_MIXER_CHA_VOL, vol) && cs_write(CS_MIXER_CHB_VOL, vol);
+}
+
+bool codec_headphones_present(void)
+{
+	/* Stock detect: Detect Status 1 (0x1B77) bit7 = headphone connected
+	 * (datasheet 7.9.8). Clean level status — no debounce/latch quirks. */
+	s_cs_page = -1;
+	uint8_t v = 0;
+	if (!cs_read(CS_DETECT_STATUS1, &v)) return false;
+	return (v >> 7) & 0x01u;
+}
+
 void codec_refresh_diag(void)
 {
 	s_cs_page = -1;
 	cs_read(CS_PLL_LOCK_STATUS, &s_diag.live_cs_pll);
+	cs_read(CS_OSC_SW_STATUS,   &s_diag.live_cs_osc_sw);
+	cs_read(CS_HP_CTL,          &s_diag.live_cs_hp_ctl);
 	s_tas_page = -1;
 	tas_read(1, 46, &s_diag.live_tas_p1r46);
 	tas_read(1, 45, &s_diag.live_tas_p1r45);

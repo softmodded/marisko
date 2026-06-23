@@ -34,6 +34,24 @@ static void enter_system_off(void)
 	for (;;);
 }
 
+/* Headphone level via CS42L42 mixer volume (MIXER_CHA/CHB_VOL). 0x00 = 0 dB
+ * (full scale — too loud for headphones); attenuation grows with the code.
+ * Level 0 = silence (handled by muting HP_CTL, since the mixer can't fully
+ * mute); levels 1..7 cap well below full scale. Tune by ear. */
+static const uint8_t vol_hp[8] = {0x00, 0x1D, 0x1A, 0x17, 0x14, 0x11, 0x0D, 0x0A};
+
+/* Apply a 0..7 volume level to the headphone output: level 0 mutes via HP_CTL,
+ * higher levels unmute and set the mixer attenuation. */
+static void hp_apply_level(int lvl)
+{
+	if (lvl <= 0) {
+		codec_headphone_mute(true);
+	} else {
+		codec_headphone_volume(vol_hp[lvl]);
+		codec_headphone_mute(false);
+	}
+}
+
 /* ── Main ──────────────────────────────────────────────────────────────────── */
 
 int main(void)
@@ -120,6 +138,8 @@ int main(void)
 	int vol_level  = 3;
 	int volup_prev = 0;
 	int voldn_prev = 0;
+	int volup_hold = 0;   /* loops a vol button has been held (for auto-repeat) */
+	int voldn_hold = 0;
 	int next_prev  = 0;
 	int prev_prev  = 0;
 	int meter_ticks = 0;   /* loops left to show the volume bar before bounce resumes */
@@ -128,7 +148,20 @@ int main(void)
 	 * displayed envelope with instant attack + smooth time-based decay. */
 	const int VU_REF = 171;   /* baked level 0..255 that fills 4 bars (≈22000>>7) */
 	int vu_disp = 0;
-	codec_speaker_volume(vol_r46[vol_level]);
+
+	/* Output routing: speaker (TAS2505) or headphones (CS42L42), chosen by the
+	 * CS42L42 jack-sense. Exactly one is unmuted. Debounce jack reads so a noisy
+	 * insert doesn't flap. Detect the initial state before the loop so booting
+	 * with headphones in starts on the right output. */
+	bool hp_out = codec_headphones_present();
+	int  hp_raw_prev = hp_out ? 1 : 0;   /* last raw jack read */
+	int  hp_debounce = 0;                /* consecutive stable raw reads */
+	if (hp_out) {
+		codec_speaker_mute(true);
+		hp_apply_level(vol_level);
+	} else {
+		codec_speaker_volume(vol_r46[vol_level]);
+	}
 
 	while (1) {
 		if (!(NRF_P0->IN & (1u << 27)))
@@ -149,14 +182,24 @@ int main(void)
 		int next_now  = (vladder >= 1080 && vladder <= 1340);
 		int voldn_now = (vladder >=  620 && vladder <=  860);
 		int prev_now  = (vladder >=  300 && vladder <=  520);
-		if (volup_now && !volup_prev && vol_level < 7) {
-			vol_level++;
-			codec_speaker_volume(vol_r46[vol_level]);
-			meter_ticks = 40;
-		}
-		if (voldn_now && !voldn_prev && vol_level > 0) {
-			vol_level--;
-			codec_speaker_volume(vol_r46[vol_level]);
+		/* Vol +/- with hold-to-repeat: step once on the press edge, then after a
+		 * short hold (~180 ms) auto-repeat every ~70 ms while held. */
+		enum { VOL_HOLD_DELAY = 10, VOL_HOLD_RATE = 4 };
+		int vol_step = 0;
+		if (volup_now) {
+			if (!volup_prev) { volup_hold = 0; vol_step = 1; }
+			else if (++volup_hold >= VOL_HOLD_DELAY && volup_hold % VOL_HOLD_RATE == 0) vol_step = 1;
+		} else volup_hold = 0;
+		if (voldn_now) {
+			if (!voldn_prev) { voldn_hold = 0; vol_step = -1; }
+			else if (++voldn_hold >= VOL_HOLD_DELAY && voldn_hold % VOL_HOLD_RATE == 0) vol_step = -1;
+		} else voldn_hold = 0;
+		if (vol_step > 0 && vol_level < 7) vol_level++;
+		else if (vol_step < 0 && vol_level > 0) vol_level--;
+		else vol_step = 0;
+		if (vol_step != 0) {
+			if (hp_out) hp_apply_level(vol_level);
+			else        codec_speaker_volume(vol_r46[vol_level]);
 			meter_ticks = 40;
 		}
 		/* Prev/next rocker: skip song + ensure playing. */
@@ -166,6 +209,32 @@ int main(void)
 		voldn_prev = voldn_now;
 		next_prev  = next_now;
 		prev_prev  = prev_now;
+
+		/* Headphone jack sense (every loop ≈ every 18 ms; the I2C read is cheap).
+		 * Debounce: 2 stable raw reads before flipping output, so a noisy insert
+		 * can't flap but the switch still feels immediate. On a switch, mute the
+		 * old output and unmute the new at the current level so loudness stays
+		 * roughly consistent across the change. */
+		{
+			int hp_raw = codec_headphones_present() ? 1 : 0;
+			if (hp_raw == hp_raw_prev) {
+				if (hp_debounce < 2) hp_debounce++;
+			} else {
+				hp_debounce = 0;
+				hp_raw_prev = hp_raw;
+			}
+			if (hp_debounce >= 2 && hp_raw != (hp_out ? 1 : 0)) {
+				hp_out = hp_raw;
+				if (hp_out) {
+					codec_speaker_mute(true);
+					hp_apply_level(vol_level);
+				} else {
+					codec_headphone_mute(true);
+					codec_speaker_volume(vol_r46[vol_level]);
+					codec_speaker_mute(false);
+				}
+			}
+		}
 
 		/* pb_leds: volume bar (≈1.2 s after a vol button), else live audio VU
 		 * while playing, else off. Bottom→top, partial segment dims. */

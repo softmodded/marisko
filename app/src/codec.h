@@ -29,6 +29,21 @@ bool codec_speaker_mute(bool mute);
 /* Speaker volume: 0x00 = max gain, 0x7F = mute (TAS2505 P1/R46 scale). */
 bool codec_speaker_volume(uint8_t vol);
 
+/* Headphone (CS42L42) mute control. HP_CTL 0x2001: 0x0E=mute, 0x02=unmute
+ * (values from the sp1-midi cs42l42 driver). The codec inits muted. */
+bool codec_headphone_mute(bool mute);
+
+/* Headphone volume: writes HP_VOL_A (0x2601) + HP_VOL_B (0x2609). The stock
+ * bring-up listening level is 0x4C; larger raw = more attenuation (quieter).
+ * Exact dB/step is uncalibrated — tune the table in main.c by ear. */
+bool codec_headphone_volume(uint8_t vol);
+
+/* True if headphones are plugged into the TRRS jack. Reads CS42L42
+ * TSRS_PLUG_STATUS (0x130F): plugged when ((reg & 0x0C) >> 2) == 0x03
+ * (logic from the sp1-midi cs42l42_codec_is_headphone_connected). Tip-sense
+ * detection is enabled during codec_init (MIC_DET_CTL1 + TIPSENSE_CTL). */
+bool codec_headphones_present(void);
+
 /* Diagnostic snapshot for the USB CODEC_DIAG command. 32 bytes. */
 typedef struct {
 	uint8_t  init_ok;        /* 1 if codec_init() returned true */
@@ -55,7 +70,9 @@ typedef struct {
 	uint8_t  live_tas_p0r25; /* clock mux status */
 	int8_t   audio_i2s_cfg_ret; /* i2s_configure() return code */
 	uint8_t  audio_stage;       /* how far audio_init() progressed (see audio.c) */
-	uint8_t  _pad[9];
+	uint8_t  live_cs_osc_sw;    /* CS42L42 0x1109 osc switch status (0x02 = SCLK→MCLK ok) */
+	uint8_t  live_cs_hp_ctl;    /* CS42L42 0x2001 HP_CTL now (0x01 unmuted, 0x0D muted) */
+	uint8_t  _pad[7];
 } codec_diag_t;
 
 /* Re-read live codec state into the diag struct (called before reporting). */
