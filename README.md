@@ -38,6 +38,10 @@ see **[contributing.md](CONTRIBUTING.md)** for rules & guidelines.
 - **[sp-1 developer wiki](https://github.com/timknapen/SP-1-dev)** by tim knapen — hardware documentation, pinouts, and bootloader specs
 - **[solderless](https://solderless.engineering)** — the web-based firmware and stem loader that makes all of this possible without opening the device
 
+## ai disclaimer
+
+i am dipping my toes into using ai to assist me on projects for the first time. i'm using a deepseek model hosted locally harnessed with opencode. most commit descriptions/comments are not written by me and are placed there by the model because i suck at that type of stuff :P 
+
 ## license
 
 MIT
