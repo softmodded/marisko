@@ -52,10 +52,116 @@ static void hp_apply_level(int lvl)
 	}
 }
 
+/* ── Stem faders ─────────────────────────────────────────────────────────────
+ * The faders drive per-stem mix gain and must respond in real time. The audio
+ * feed thread is cooperative and spends ~40% of wall-clock in long bit-bang
+ * eMMC reads, during which the (lower-priority) main thread can't run — so
+ * sampling the faders in main makes them freeze in ~68 ms chunks. Instead a
+ * small thread, priority ABOVE the feed thread, samples the faders at ~125 Hz;
+ * it preempts the feed even mid-read (a ~150 µs blip the deep TX queue absorbs)
+ * so gain tracks the faders with no audible lag. */
+#define FADER_MIN 120   /* raw ADC at bottom of travel → gain 0 */
+#define FADER_MAX 3100  /* raw ADC at top of travel    → gain 256 (unity) */
+#define VU_REF    171   /* baked level 0..255 that fills the 4-bar pb meter */
+
+/* Shared UI state: the buttons (main thread) write these, the UI thread reads
+ * them to render the pb-LED meter. */
+static volatile int s_vol_level   = 3;   /* current 0..7 volume level */
+static volatile int s_meter_ticks = 0;   /* >0 = show the volume bar (UI counts down) */
+
+K_THREAD_STACK_DEFINE(s_ui_stack, 1024);
+static struct k_thread s_ui_thread;
+
+/* UI thread: samples the 4 faders and renders both LED visualizers at ~125 Hz.
+ * Runs ABOVE the audio feed thread so it preempts the feed's long eMMC reads —
+ * the faders and the meters stay real-time instead of freezing in ~68 ms chunks
+ * (which is what happened when this ran in the read-starved main thread). Its
+ * per-tick work is ~0.2 ms, a blip the deep TX queue absorbs. */
+static void ui_main(void *a, void *b, void *c)
+{
+	(void)a; (void)b; (void)c;
+	/* saadc pselp per fader (= AIN+1): F1=AIN3=4 (stem0), F2=AIN6=7 (stem1),
+	 * F3=AIN2=3 (stem2), F4=AIN7=8 (stem3). */
+	static const uint8_t fader_ch[4] = {4u, 7u, 3u, 8u};
+	int vu_disp = 0;
+	int trk_disp[4] = {0, 0, 0, 0};
+	/* Smooth real-time playback position for the meters. The feed thread's
+	 * s_cur_block freezes for ~68 ms during each eMMC read then jumps, which
+	 * makes the meters stutter. ui_blk advances at the audio rate (375 blk/s →
+	 * 3 blocks per 8 ms tick) and is gently eased toward the real position to
+	 * stay aligned and to follow song changes / seeks. */
+	int32_t ui_blk = 0;
+
+	uint16_t gains[4] = {256, 256, 256, 256};
+	int fi = 0;
+
+	while (1) {
+		/* Faders → per-stem mix gain. Sample ONE fader per tick (round-robin):
+		 * each fader updates every 4 ticks ≈ 32 ms, still real-time. Hold the
+		 * previous gain on a failed read (no stutter). With oversampling bypassed
+		 * a read is ~20 µs, cheap enough to do at this high priority. */
+		int raw = saadc_read(fader_ch[fi]);
+		if (raw >= 0) {
+			int t = (raw - FADER_MIN) * 256 / (FADER_MAX - FADER_MIN);
+			if (t < 0)   t = 0;
+			if (t > 256) t = 256;
+			gains[fi] = (uint16_t)t;
+		}
+		fi = (fi + 1) & 3;
+		audio_set_stem_gains(gains);
+
+		bool playing = audio_is_playing();
+
+		/* Advance the smooth position at the audio rate, then ease toward the
+		 * real (bursty) block to correct drift and follow song changes/seeks. */
+		if (playing) ui_blk += 3;
+		ui_blk += ((int32_t)audio_cur_block() - ui_blk) >> 4;
+		if (ui_blk < 0) ui_blk = 0;
+		uint32_t blk = (uint32_t)ui_blk;
+
+		/* pb LEDs: volume bar for ~1 s after a vol button, else the live overall
+		 * VU (stems × fader gains), else off. One-pole for a smooth envelope. */
+		int fill;
+		if (s_meter_ticks > 0) {
+			s_meter_ticks--;
+			fill = s_vol_level * NUM_PB_LEDS * PWM_TOP / 7;
+		} else if (playing) {
+			int target = (int)audio_vu_level_at(blk) * (NUM_PB_LEDS * PWM_TOP) / VU_REF;
+			if (target > NUM_PB_LEDS * PWM_TOP) target = NUM_PB_LEDS * PWM_TOP;
+			vu_disp += (target - vu_disp) / 2;
+			fill = vu_disp;
+		} else {
+			vu_disp = 0;
+			fill = 0;
+		}
+		for (int s = 0; s < NUM_PB_LEDS; s++) {
+			int b = fill - s * PWM_TOP;
+			if (b < 0)       b = 0;
+			if (b > PWM_TOP) b = PWM_TOP;
+			pwm1_set_duty(NUM_PB_LEDS - 1 - s, (uint16_t)b);
+		}
+
+		/* Track LEDs: per-stem baked level (× fader gain), one-pole smoothed. */
+		for (int s = 0; s < 4; s++) {
+			int target = playing ? (int)audio_stem_level_at(blk, s) * PWM_TOP / 255 : 0;
+			trk_disp[s] += (target - trk_disp[s]) / 2;
+			pwm0_set_duty(s, (uint16_t)trk_disp[s]);
+		}
+
+		k_msleep(8);
+	}
+}
+
 /* ── Main ──────────────────────────────────────────────────────────────────── */
 
 int main(void)
 {
+	/* Drop the main thread BELOW the audio feed thread (preempt 5) so the feed
+	 * is never starved by main's button/USB/jack work. Main only needs to run
+	 * often enough for input + the watchdog; the feed yields to it whenever its
+	 * TX alloc blocks. (Nothing else runs yet, so lowering now is safe.) */
+	k_thread_priority_set(k_current_get(), 10);
+
 	NRF_PPI->CHENCLR = 0xFFFFFFFFUL;
 
 	/* P1.10 = PIN_BTN_COM: power rail for button ladders and faders */
@@ -135,19 +241,15 @@ int main(void)
 	 * (0x00 = 0 dB loudest, larger = quieter). Vol +/- on ladder 2 (AIN1):
 	 * measured idle≈0, vol+≈1806, vol-≈729. Boot at a night-friendly level. */
 	static const uint8_t vol_r46[8] = {0x7F, 0x48, 0x3C, 0x30, 0x24, 0x18, 0x0C, 0x00};
-	int vol_level  = 3;
 	int volup_prev = 0;
 	int voldn_prev = 0;
 	int volup_hold = 0;   /* loops a vol button has been held (for auto-repeat) */
 	int voldn_hold = 0;
 	int next_prev  = 0;
 	int prev_prev  = 0;
-	int meter_ticks = 0;   /* loops left to show the volume bar before bounce resumes */
-
-	/* Audio VU: reference for a full 4-bar bar (higher = less sensitive) and a
-	 * displayed envelope with instant attack + smooth time-based decay. */
-	const int VU_REF = 171;   /* baked level 0..255 that fills 4 bars (≈22000>>7) */
-	int vu_disp = 0;
+	/* vol_level + meter_ticks live at file scope (s_vol_level / s_meter_ticks):
+	 * the buttons here write them, the UI thread reads them to render the meter.
+	 * The LED visualizers are drawn by the UI thread, not this loop. */
 
 	/* Output routing: speaker (TAS2505) or headphones (CS42L42), chosen by the
 	 * CS42L42 jack-sense. Exactly one is unmuted. Debounce jack reads so a noisy
@@ -158,10 +260,18 @@ int main(void)
 	int  hp_debounce = 0;                /* consecutive stable raw reads */
 	if (hp_out) {
 		codec_speaker_mute(true);
-		hp_apply_level(vol_level);
+		hp_apply_level(s_vol_level);
 	} else {
-		codec_speaker_volume(vol_r46[vol_level]);
+		codec_speaker_volume(vol_r46[s_vol_level]);
 	}
+
+	/* Spawn the UI thread (faders + LED visualizers) at a priority ABOVE the
+	 * audio feed thread (K_PRIO_COOP(NUM_COOP-1)) so it preempts the feed's long
+	 * eMMC reads and keeps the faders and meters real-time. */
+	k_thread_create(&s_ui_thread, s_ui_stack, K_THREAD_STACK_SIZEOF(s_ui_stack),
+			ui_main, NULL, NULL, NULL,
+			K_PRIO_PREEMPT(1), 0, K_NO_WAIT);
+	k_thread_name_set(&s_ui_thread, "ui");
 
 	while (1) {
 		if (!(NRF_P0->IN & (1u << 27)))
@@ -194,13 +304,13 @@ int main(void)
 			if (!voldn_prev) { voldn_hold = 0; vol_step = -1; }
 			else if (++voldn_hold >= VOL_HOLD_DELAY && voldn_hold % VOL_HOLD_RATE == 0) vol_step = -1;
 		} else voldn_hold = 0;
-		if (vol_step > 0 && vol_level < 7) vol_level++;
-		else if (vol_step < 0 && vol_level > 0) vol_level--;
+		if (vol_step > 0 && s_vol_level < 7) s_vol_level++;
+		else if (vol_step < 0 && s_vol_level > 0) s_vol_level--;
 		else vol_step = 0;
 		if (vol_step != 0) {
-			if (hp_out) hp_apply_level(vol_level);
-			else        codec_speaker_volume(vol_r46[vol_level]);
-			meter_ticks = 40;
+			if (hp_out) hp_apply_level(s_vol_level);
+			else        codec_speaker_volume(vol_r46[s_vol_level]);
+			s_meter_ticks = 120;   /* ~1 s of volume bar at the UI thread's 8 ms tick */
 		}
 		/* Prev/next rocker: skip song + ensure playing. */
 		if (next_now && !next_prev) { audio_skip(1);  audio_play(); }
@@ -209,6 +319,9 @@ int main(void)
 		voldn_prev = voldn_now;
 		next_prev  = next_now;
 		prev_prev  = prev_now;
+
+		/* (Faders + both LED visualizers are handled by the UI thread so they
+		 * stay real-time during the feed thread's long eMMC reads.) */
 
 		/* Headphone jack sense (every loop ≈ every 18 ms; the I2C read is cheap).
 		 * Debounce: 2 stable raw reads before flipping output, so a noisy insert
@@ -227,40 +340,17 @@ int main(void)
 				hp_out = hp_raw;
 				if (hp_out) {
 					codec_speaker_mute(true);
-					hp_apply_level(vol_level);
+					hp_apply_level(s_vol_level);
 				} else {
 					codec_headphone_mute(true);
-					codec_speaker_volume(vol_r46[vol_level]);
+					codec_speaker_volume(vol_r46[s_vol_level]);
 					codec_speaker_mute(false);
 				}
 			}
 		}
 
-		/* pb_leds: volume bar (≈1.2 s after a vol button), else live audio VU
-		 * while playing, else off. Bottom→top, partial segment dims. */
+		/* (The pb + track LED visualizers are rendered by the UI thread.) */
 		bool playing = audio_is_playing();
-		int fill;
-		if (meter_ticks > 0) {
-			meter_ticks--;
-			fill = vol_level * NUM_PB_LEDS * PWM_TOP / 7;   /* 0..4·TOP */
-		} else if (playing) {
-			/* Baked level (0..255) for the current block → target fill, with a
-			 * light one-pole for smooth motion. */
-			int lvl    = (int)audio_vu_level();
-			int target = lvl * (NUM_PB_LEDS * PWM_TOP) / VU_REF;
-			if (target > NUM_PB_LEDS * PWM_TOP) target = NUM_PB_LEDS * PWM_TOP;
-			vu_disp += (target - vu_disp) / 2;
-			fill = vu_disp;
-		} else {
-			vu_disp = 0;
-			fill = 0;
-		}
-		for (int s = 0; s < NUM_PB_LEDS; s++) {
-			int b = fill - s * PWM_TOP;
-			if (b < 0)        b = 0;
-			if (b > PWM_TOP)  b = PWM_TOP;
-			pwm1_set_duty(NUM_PB_LEDS - 1 - s, (uint16_t)b);
-		}
 
 		/* Renode mirror: expose GPIO state for emulator observation */
 		*(volatile uint32_t *)0x2000FFF0 = NRF_P0->OUT;

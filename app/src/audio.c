@@ -117,14 +117,24 @@ static volatile uint32_t s_write_fails;   /* i2s_write() failures */
 static volatile uint32_t s_max_read_us;   /* worst per-block eMMC read time seen (budget 2670) */
 static volatile uint32_t s_blocks_fed;    /* total blocks handed to i2s_write */
 
-/* ── Baked VU levels (disk v2) ──────────────────────────────────────────────
- * rome bakes one level byte per LVL_DECIM audio blocks (peak >> 7, 0..255). The
- * whole decimated array is tiny, so the feed thread loads it into RAM once at
- * song start — no per-frame and no recurring eMMC access during playback. Main
- * reads s_lvl_ram[cur_block / LVL_DECIM]; on a feed stall cur_block freezes so
- * the meter holds rather than dropping out. */
-#define LVL_DECIM     16u       /* audio blocks per baked level byte — must match rome */
-#define LVL_MAX_BYTES 12288u    /* RAM cap (~8.7 min @ DECIM=16); longer songs truncate */
+/* Per-stem mix gain (0..256, 256 = unity), driven live by the 4 faders from the
+ * main thread. Default unity so playback is full until faders are read. */
+static volatile uint16_t s_stem_gain[4] = {256u, 256u, 256u, 256u};
+void audio_set_stem_gains(const uint16_t g[4])
+{
+	for (int i = 0; i < 4; i++) s_stem_gain[i] = g[i] > 256u ? 256u : g[i];
+}
+
+/* ── Baked per-stem VU levels (disk v3) ─────────────────────────────────────
+ * rome bakes 4 level bytes per LVL_DECIM audio blocks — one peak per stem
+ * (each >> 7, 0..255) — stored interleaved [s0,s1,s2,s3, …]. The whole array is
+ * loaded into RAM once at song start (no recurring eMMC during playback). The
+ * track LEDs dim to each stem's level; the overall pb-LED meter sums the four
+ * scaled by the live fader gains. Index = (cur_block / LVL_DECIM) * 4 + stem;
+ * on a feed stall cur_block freezes so the meter holds rather than dropping. */
+#define LVL_DECIM     16u       /* audio blocks per baked level sample — must match rome */
+#define LVL_STEMS     4u        /* bytes per sample (one peak per stem) */
+#define LVL_MAX_BYTES 24576u    /* RAM cap: ~4.4 min @ DECIM=16, 4 stems; longer truncates */
 
 static bool              s_lvl_enabled;   /* disk reports v2 → levels present */
 static bool              s_lvl_present;   /* current song has a level region */
@@ -139,7 +149,7 @@ static void lvl_setup(uint32_t block_start, uint32_t block_count)
 {
 	s_lvl_present = s_lvl_enabled && block_count > 0;
 	s_lvl_start   = block_start + block_count;
-	uint32_t bytes = (block_count + LVL_DECIM - 1u) / LVL_DECIM;
+	uint32_t bytes = ((block_count + LVL_DECIM - 1u) / LVL_DECIM) * LVL_STEMS;
 	if (bytes > LVL_MAX_BYTES) bytes = LVL_MAX_BYTES;
 	s_lvl_count   = bytes;
 	s_lvl_blocks  = (bytes + 511u) / 512u;
@@ -232,8 +242,12 @@ static void fill_block(int32_t *buf)
 					uint8_t br = blk[or_];
 					uint8_t nl = (i & 1u) ? (bl >> 4) : (bl & 0xFu);
 					uint8_t nr = (i & 1u) ? (br >> 4) : (br & 0xFu);
-					l += adpcm_step(nl, stem * 2);
-					r += adpcm_step(nr, stem * 2 + 1);
+					/* Decode every stem (advances its ADPCM predictor even when
+					 * silenced, so a muted fader never desyncs the decoder), then
+					 * scale by the live fader gain (0..256, 256 = unity). */
+					int32_t g = s_stem_gain[stem];
+					l += (adpcm_step(nl, stem * 2)     * g) >> 8;
+					r += (adpcm_step(nr, stem * 2 + 1) * g) >> 8;
 				}
 				/* Average 4 stems (>>2): sum of four ±32767 values is ±131068,
 				 * so >>2 → ±32767 max and NEVER clips. The old >>1 clipped hard
@@ -365,21 +379,16 @@ bool audio_init(void)
 	codec_note_audio(cfg_ret, 3);
 	if (cfg_ret != 0) return false;
 
-	/* Preemptible, lower priority than main (prio 0) so main's button poll
-	 * (saadc_read) and the USB stack preempt the feed cleanly. Audio still gets
-	 * ~93% CPU since main only runs briefly each tick. */
-	/* Cooperative priority (just above the preemptible main thread). Audio is
-	 * hard-realtime: the per-block decode+read already nearly fills the 2.67 ms
-	 * budget, so any preemption by main (prio 0: button SAADC poll, LED PWM, USB
-	 * poll) pushed feed below the 375 blk/s consume rate → the TX queue drained →
-	 * continuous underruns (clicks/stutters) no TX-queue depth could absorb. As a
-	 * coop thread, feed runs whenever runnable and is never preempted by main;
-	 * its blocking alloc/i2s_write calls are reschedule points so main (WDT feed,
-	 * buttons) still runs between bursts. Buttons sample up to one ~40 ms read
-	 * later — imperceptible. */
+	/* Preemptible priority 5 — ABOVE the main thread (lowered to 10) so main's
+	 * button/USB/LED work can never starve the feed (that starvation was the old
+	 * underrun cause), but BELOW the UI thread (priority 1) so the faders + LED
+	 * meters can preempt the feed's long bit-bang eMMC reads and stay real-time.
+	 * A cooperative feed could not be preempted at all, which froze the UI for
+	 * ~68 ms per read. The feed yields to main whenever its alloc/i2s_write
+	 * blocks (TX queue full), which is often, so main still gets WDT/buttons. */
 	k_thread_create(&s_feed_thread, s_feed_stack, FEED_STACK,
 			feed_main, NULL, NULL, NULL,
-			K_PRIO_COOP(CONFIG_NUM_COOP_PRIORITIES - 1), K_FP_REGS, K_NO_WAIT);
+			K_PRIO_PREEMPT(5), K_FP_REGS, K_NO_WAIT);
 	k_thread_name_set(&s_feed_thread, "i2s_feed");
 
 	k_sleep(K_MSEC(20));
@@ -425,16 +434,42 @@ void audio_play(void)  { s_playing = true; }
 void audio_pause(void) { s_playing = false; }
 void audio_skip(int dir) { s_skip_req = (dir < 0) ? -1 : 1; }
 
-/* VU level (0..255) for the LED meter at the current playback position. */
-uint32_t audio_vu_level(void)
+/* Index of stem `stem` in the baked level array at block `blk`, or UINT32_MAX
+ * if there is no valid baked level. The caller passes a smooth real-time block
+ * estimate (not s_cur_block, which freezes during eMMC reads → choppy meters). */
+static uint32_t lvl_index_at(uint32_t blk, int stem)
+{
+	if (!s_lvl_present || !s_lvl_loaded || s_lvl_count < LVL_STEMS) return 0xFFFFFFFFu;
+	uint32_t idx = (blk / LVL_DECIM) * LVL_STEMS + (uint32_t)stem;
+	uint32_t last = s_lvl_count - LVL_STEMS + (uint32_t)stem;
+	if (idx > last) idx = last;
+	return idx;
+}
+
+/* Baked level (0..255) of one stem at block `blk`, scaled by its live fader gain
+ * so a muted/faded stem dims. For the per-stem track LEDs. */
+uint32_t audio_stem_level_at(uint32_t blk, int stem)
+{
+	if (stem < 0 || stem > 3) return 0;
+	uint32_t idx = lvl_index_at(blk, stem);
+	if (idx == 0xFFFFFFFFu) return 0;
+	uint32_t v = s_lvl_ram[idx];
+	return (v * s_stem_gain[stem]) >> 8;   /* 0..255 */
+}
+
+/* Overall VU level (0..255) for the pb-LED meter at block `blk`: the four stems
+ * summed, each scaled by its fader gain, so the meter tracks the live mix.
+ * Falls back to the on-device peak-hold for discs without baked levels. */
+uint32_t audio_vu_level_at(uint32_t blk)
 {
 	if (s_lvl_present) {
-		if (!s_lvl_loaded || s_lvl_count == 0) return 0;
-		uint32_t idx = s_cur_block / LVL_DECIM;
-		if (idx >= s_lvl_count) idx = s_lvl_count - 1u;
-		return s_lvl_ram[idx];
+		if (!s_lvl_loaded || s_lvl_count < LVL_STEMS) return 0;
+		uint32_t sum = 0;
+		for (int s = 0; s < 4; s++) sum += audio_stem_level_at(blk, s);   /* 0..1020 */
+		sum >>= 2;                                                        /* 0..255  */
+		return sum > 255 ? 255 : sum;
 	}
-	/* v1 fallback: on-device peak-hold (0..32767), scaled to 0..255. */
+	/* fallback: on-device peak-hold (0..32767), scaled to 0..255. */
 	int32_t v = s_peak;
 	s_peak = 0;
 	v >>= 7;

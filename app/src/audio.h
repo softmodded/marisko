@@ -47,6 +47,11 @@ void audio_set_levels_enabled(bool enabled);
  * Resets ADPCM state to silence; call audio_play() to start. */
 void audio_load_song(uint32_t block_start, uint32_t block_count);
 
+/* Live per-stem mix gain from the 4 faders (0..256, 256 = unity, 0 = silent).
+ * Index = stem (0..3). The feed thread applies these in the mix; muted stems
+ * still advance their ADPCM decoder so they never desync. Safe from main. */
+void audio_set_stem_gains(const uint16_t g[4]);
+
 /* Play / pause / toggle. Safe to call from the main thread at any time. */
 void audio_play(void);
 void audio_pause(void);
@@ -57,11 +62,16 @@ bool audio_is_playing(void);
  * the song change reads the catalog (eMMC) there to avoid a bus race. */
 void audio_skip(int dir);
 
-/* Current VU level (0..255) for the LED meter, indexed by playback position.
- * With baked levels (disk v2) this reads the precomputed level for the block
- * being decoded from RAM (loaded once at song start) — no per-frame eMMC. Falls
- * back to on-device peak-hold on v1 discs. Caller applies light smoothing. */
-uint32_t audio_vu_level(void);
+/* Overall VU level (0..255) for the pb-LED meter at block `blk` — the four
+ * baked stem levels summed and scaled by the live fader gains (disk v3). Falls
+ * back to on-device peak-hold on discs without baked levels. The caller passes
+ * a smooth real-time block estimate (not audio_cur_block(), which freezes during
+ * eMMC reads → choppy meters) and applies light smoothing. */
+uint32_t audio_vu_level_at(uint32_t blk);
+
+/* Baked per-stem VU level (0..255) at block `blk`, scaled by the stem's live
+ * fader gain (disk v3). Index = stem 0..3. For the track LEDs. 0 if no levels. */
+uint32_t audio_stem_level_at(uint32_t blk, int stem);
 
 /* Diagnostic: current playback position (relative block index into the song). */
 uint32_t audio_cur_block(void);
