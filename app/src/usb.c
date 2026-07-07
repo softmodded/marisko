@@ -331,8 +331,13 @@ static void handle_song_multiblock(const uint8_t *count_payload)
 		g_upload.multi_begun = false;
 		g_upload.active = false;
 		send_err();
-		k_sleep(K_MSEC(50));
-		ring_buf_reset(&g_rx_rb);
+		uint32_t quiet = 0;
+		while (quiet < 10) {   /* ~100 ms of continuous silence */
+			k_sleep(K_MSEC(10));
+			feed_wdt();
+			if (ring_buf_size_get(&g_rx_rb) == 0) quiet++;
+			else { ring_buf_reset(&g_rx_rb); quiet = 0; }
+		}
 	}
 }
 
@@ -468,9 +473,10 @@ void usb_cdc_poll(void)
 		uint32_t remaining = plen;
 		while (remaining > 0) {
 			uint32_t chunk = remaining < sizeof(drain) ? remaining : sizeof(drain);
-			usb_read_bytes(drain, chunk, 100000);
+			if (!usb_read_bytes(drain, chunk, 100000)) break;
 			remaining -= chunk;
 		}
+		ring_buf_reset(&g_rx_rb);
 		send_err();
 		return;
 	}
